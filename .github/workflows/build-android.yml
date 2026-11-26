@@ -94,13 +94,18 @@ jobs:
               appId: "1:359305394572:web:33464b0e35228f76cabea9",
               firestoreDatabaseId: "ai-studio-remixremixremixr-8acde1bb-0f68-49e5-8b92-365bf5c2e31f",
             };
-            for (const file of ["android/app/src/main/assets/firebase-client-config.json", "firebase-applet-config.json"]) {
-              assert.ok(fs.existsSync(file), `Missing ${file}`);
-              const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
-              assert.equal(cfg.projectId, expected.projectId, `${file} projectId mismatch`);
-              assert.equal(String(cfg.messagingSenderId || ""), expected.messagingSenderId, `${file} messagingSenderId mismatch`);
-              assert.equal(cfg.appId, expected.appId, `${file} appId mismatch`);
-              assert.equal(cfg.firestoreDatabaseId, expected.firestoreDatabaseId, `${file} firestoreDatabaseId mismatch`);
+            const file = "android/app/src/main/assets/firebase-client-config.json";
+            assert.ok(fs.existsSync(file), `Missing ${file}`);
+            const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+            assert.equal(cfg.projectId, expected.projectId, `${file} projectId mismatch`);
+            assert.equal(String(cfg.messagingSenderId || ""), expected.messagingSenderId, `${file} messagingSenderId mismatch`);
+            assert.equal(cfg.appId, expected.appId, `${file} appId mismatch`);
+            assert.equal(cfg.firestoreDatabaseId, expected.firestoreDatabaseId, `${file} firestoreDatabaseId mismatch`);
+            if (fs.existsSync("firebase-applet-config.json")) {
+              const appletCfg = JSON.parse(fs.readFileSync("firebase-applet-config.json", "utf8"));
+              if (appletCfg.projectId !== expected.projectId) {
+                console.log(`::notice::firebase-applet-config.json points to "${appletCfg.projectId}"; client builds use ${file} (${expected.projectId}).`);
+              }
             }
             console.log(`Verified Firebase config (${expected.projectId} / ${expected.firestoreDatabaseId}).`);
           '
@@ -170,7 +175,7 @@ jobs:
               const expectedPkg = "com.nexusroyale.game";
 
               if (gs?.project_info?.project_id !== expectedProject) {
-                throw new Error(`google-services.json project_id "${gs?.project_info?.project_id}" does not match firebase-applet-config.json projectId "${expectedProject}".`);
+                throw new Error(`google-services.json project_id "${gs?.project_info?.project_id}" does not match firebase-client-config.json projectId "${expectedProject}".`);
               }
               if (expectedNumber && String(gs?.project_info?.project_number || "") !== expectedNumber) {
                 throw new Error(`google-services.json project_number "${gs?.project_info?.project_number}" does not match messagingSenderId "${expectedNumber}".`);

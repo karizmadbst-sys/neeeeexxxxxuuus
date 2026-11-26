@@ -97,8 +97,8 @@ jobs:
             echo "::error::Invalid or retired VITE_BACKEND_URL ('$RESOLVED_BACKEND_URL'). Provide an active public HTTPS backend URL." >&2
             exit 1
           fi
-          if [ ! -f firebase-applet-config.json ]; then
-            echo "::error::Missing firebase-applet-config.json at repository root." >&2
+          if [ ! -f android/app/src/main/assets/firebase-client-config.json ]; then
+            echo "::error::Missing android/app/src/main/assets/firebase-client-config.json." >&2
             exit 1
           fi
           node -e '
@@ -110,13 +110,17 @@ jobs:
               appId: "1:359305394572:web:33464b0e35228f76cabea9",
               firestoreDatabaseId: "ai-studio-remixremixremixr-8acde1bb-0f68-49e5-8b92-365bf5c2e31f",
             };
-            for (const file of ["android/app/src/main/assets/firebase-client-config.json", "firebase-applet-config.json"]) {
-              assert.ok(fs.existsSync(file), `Missing ${file}`);
-              const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
-              assert.equal(cfg.projectId, expected.projectId, `Unexpected projectId "${cfg.projectId}" in ${file}; expected "${expected.projectId}".`);
-              assert.equal(String(cfg.messagingSenderId || ""), expected.messagingSenderId, `Unexpected messagingSenderId "${cfg.messagingSenderId}" in ${file}; expected "${expected.messagingSenderId}".`);
-              assert.equal(cfg.appId, expected.appId, `Unexpected appId "${cfg.appId}" in ${file}; expected "${expected.appId}".`);
-              assert.equal(cfg.firestoreDatabaseId, expected.firestoreDatabaseId, `Unexpected firestoreDatabaseId "${cfg.firestoreDatabaseId}" in ${file}; expected "${expected.firestoreDatabaseId}".`);
+            const file = "android/app/src/main/assets/firebase-client-config.json";
+            const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+            assert.equal(cfg.projectId, expected.projectId, `Unexpected projectId "${cfg.projectId}" in ${file}; expected "${expected.projectId}".`);
+            assert.equal(String(cfg.messagingSenderId || ""), expected.messagingSenderId, `Unexpected messagingSenderId "${cfg.messagingSenderId}" in ${file}; expected "${expected.messagingSenderId}".`);
+            assert.equal(cfg.appId, expected.appId, `Unexpected appId "${cfg.appId}" in ${file}; expected "${expected.appId}".`);
+            assert.equal(cfg.firestoreDatabaseId, expected.firestoreDatabaseId, `Unexpected firestoreDatabaseId "${cfg.firestoreDatabaseId}" in ${file}; expected "${expected.firestoreDatabaseId}".`);
+            if (fs.existsSync("firebase-applet-config.json")) {
+              const appletCfg = JSON.parse(fs.readFileSync("firebase-applet-config.json", "utf8"));
+              if (appletCfg.projectId !== expected.projectId) {
+                console.log(`::notice::firebase-applet-config.json points to "${appletCfg.projectId}"; client builds use ${file} (${expected.projectId}).`);
+              }
             }
             console.log(`Verified Firebase config (${expected.projectId} / ${expected.firestoreDatabaseId}) and backend URL.`);
           '
@@ -401,27 +405,32 @@ jobs:
             Write-Error "Invalid or retired VITE_BACKEND_URL ('$($env:RESOLVED_BACKEND_URL)'). Provide an active public HTTPS backend URL."
             exit 1
           }
-          foreach ($file in @('android/app/src/main/assets/firebase-client-config.json', 'firebase-applet-config.json')) {
-            if (-not (Test-Path $file)) {
-              Write-Error "Missing $file."
-              exit 1
-            }
-            $cfg = Get-Content $file -Raw | ConvertFrom-Json
-            if ($cfg.projectId -ne 'gen-lang-client-0539248410') {
-              Write-Error "Unexpected projectId '$($cfg.projectId)' in $file; expected 'gen-lang-client-0539248410'."
-              exit 1
-            }
-            if ([string]$cfg.messagingSenderId -ne '359305394572') {
-              Write-Error "Unexpected messagingSenderId '$($cfg.messagingSenderId)' in $file; expected '359305394572'."
-              exit 1
-            }
-            if ($cfg.appId -ne '1:359305394572:web:33464b0e35228f76cabea9') {
-              Write-Error "Unexpected appId '$($cfg.appId)' in $file."
-              exit 1
-            }
-            if ($cfg.firestoreDatabaseId -ne 'ai-studio-remixremixremixr-8acde1bb-0f68-49e5-8b92-365bf5c2e31f') {
-              Write-Error "Unexpected firestoreDatabaseId '$($cfg.firestoreDatabaseId)' in $file."
-              exit 1
+          $file = 'android/app/src/main/assets/firebase-client-config.json'
+          if (-not (Test-Path $file)) {
+            Write-Error "Missing $file."
+            exit 1
+          }
+          $cfg = Get-Content $file -Raw | ConvertFrom-Json
+          if ($cfg.projectId -ne 'gen-lang-client-0539248410') {
+            Write-Error "Unexpected projectId '$($cfg.projectId)' in $file; expected 'gen-lang-client-0539248410'."
+            exit 1
+          }
+          if ([string]$cfg.messagingSenderId -ne '359305394572') {
+            Write-Error "Unexpected messagingSenderId '$($cfg.messagingSenderId)' in $file; expected '359305394572'."
+            exit 1
+          }
+          if ($cfg.appId -ne '1:359305394572:web:33464b0e35228f76cabea9') {
+            Write-Error "Unexpected appId '$($cfg.appId)' in $file."
+            exit 1
+          }
+          if ($cfg.firestoreDatabaseId -ne 'ai-studio-remixremixremixr-8acde1bb-0f68-49e5-8b92-365bf5c2e31f') {
+            Write-Error "Unexpected firestoreDatabaseId '$($cfg.firestoreDatabaseId)' in $file."
+            exit 1
+          }
+          if (Test-Path 'firebase-applet-config.json') {
+            $appletCfg = Get-Content 'firebase-applet-config.json' -Raw | ConvertFrom-Json
+            if ($appletCfg.projectId -ne 'gen-lang-client-0539248410') {
+              Write-Host "::notice::firebase-applet-config.json points to '$($appletCfg.projectId)'; client builds use $file (gen-lang-client-0539248410)."
             }
           }
           Write-Host "Verified Firebase config (gen-lang-client-0539248410 / ai-studio-remixremixremixr-8acde1bb-0f68-49e5-8b92-365bf5c2e31f) and backend URL."
