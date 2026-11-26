@@ -1,0 +1,18 @@
+Create a new game mode called **BATTLE ROYALE**.
+
+This mode must be an offline or AI-controlled Battle Royale experience where the player fights against intelligent AI bots instead of real online players.
+
+AI BOT REQUIREMENTS:
+- Add multiple AI-controlled enemy characters to every match.
+- Bots must behave like real human players.
+- Bots must run, walk, jump, crouch, aim, shoot, reload, and use weapons.
+- Bots must search for weapons, ammunition, armor, and medical supplies.
+- Bots must enter buildings, explore houses, collect loot, and open doors.
+- Bots must detect enemies, take cover, hide, escape danger, and attack strategically.
+- Bots must use different combat strategies and difficulty levels.
+- Bots must use the airplane, jump, parachute, and landing systems just like the player.
+- Bots must fight each other and the player until only one player remains.
+
+Make bots intelligent, realistic, and challenging. Avoid robotic movements and repetitive behavior.
+
+Keep the existing maps, weapons, characters, controls, and gameplay systems.

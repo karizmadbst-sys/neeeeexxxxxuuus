@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-electron/
+android/
+electron/
+data/
+.git/
+.github/
+*.log
+*.keystore
+*.jks
+google-services.json
+.env*
+!.env.example

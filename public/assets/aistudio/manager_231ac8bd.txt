@@ -1,0 +1,57 @@
+Fix the Google authentication error in NEXUS ROYALE.
+
+CURRENT ERROR:
+"Your device doesn't support credential manager"
+
+### 1. FIX GOOGLE AUTHENTICATION
+- Inspect the current Google authentication implementation.
+- Identify why it is trying to use an unsupported Credential Manager API.
+- Since this project uses Firebase Authentication in a web-based environment, use Firebase's supported Google authentication methods.
+- Use signInWithPopup with GoogleAuthProvider on supported browsers.
+- Implement signInWithRedirect as a fallback when popups are blocked or unsupported.
+- Handle the redirect result correctly when the application reloads.
+- Do not require Android Credential Manager or native Google authentication APIs for the web version.
+- Do not use unsupported navigator.credentials methods.
+
+### 2. FIREBASE INTEGRATION
+- Reuse the existing Firebase project and authentication configuration.
+- Preserve existing Google OAuth credentials.
+- Verify authorized domains.
+- Preserve existing player accounts and permanent Player IDs.
+- Do not create duplicate accounts.
+- Handle authentication errors properly.
+
+### 3. AUTHENTICATION FLOW
+The correct flow must remain:
+
+1. Player opens NEXUS ROYALE.
+2. The pre-lobby authentication screen appears.
+3. Player clicks SIGN IN WITH GOOGLE.
+4. Google account selection opens successfully.
+5. Firebase authenticates the player.
+6. The LOGIN button becomes enabled.
+7. Player clicks LOGIN.
+8. The 5-second loading screen appears.
+9. Player enters the existing game lobby.
+
+### 4. STRICT RESTRICTIONS
+- Do not redesign the authentication screen.
+- Do not change the background, logo, buttons, or layout.
+- Do not remove the separate LOGIN button.
+- Do not automatically enter the lobby after Google authentication.
+- Do not modify the existing loading screen.
+- Do not modify multiplayer, friends, shop, or gameplay.
+- Do not replace the existing Firebase project.
+
+### 5. TESTING
+Test Google authentication on desktop Chrome and Android Chrome.
+
+Verify:
+- Google account selection works.
+- Authentication succeeds.
+- Existing accounts can log in.
+- New accounts receive unique Player IDs.
+- The LOGIN button activates only after successful authentication.
+- No Credential Manager error appears.
+
+Do not claim the issue is fixed until real Google authentication has been tested successfully.

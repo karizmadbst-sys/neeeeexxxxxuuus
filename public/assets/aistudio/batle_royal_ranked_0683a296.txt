@@ -1,0 +1,31 @@
+Create a separate competitive multiplayer game mode called **BATTLE ROYALE RANKED**.
+
+IMPORTANT: This mode must support REAL-TIME ONLINE MULTIPLAYER with real human players, not AI bots.
+
+ONLINE MULTIPLAYER REQUIREMENTS:
+- Allow real players to connect and play together over the internet.
+- Create an online matchmaking system that finds available human players.
+- Allow players from Android and PC to play together.
+- Create multiplayer lobbies where players can wait before matches begin.
+- Synchronize all players' movements, positions, animations, weapons, shooting, health, and actions in real time.
+- Every player must control their own character independently.
+- Implement a server-authoritative multiplayer system to prevent cheating and synchronization problems.
+- Use a reliable multiplayer backend with dedicated game servers or a suitable real-time networking infrastructure.
+- Support the airplane, parachute, landing, looting, combat, and elimination systems in online matches.
+- Display real player names and live match information.
+
+RANKED SYSTEM:
+- Add competitive ranks such as Bronze, Silver, Gold, Platinum, Diamond, Heroic, and Master.
+- Award or deduct ranked points according to match performance and final placement.
+- Add a leaderboard showing the best players.
+- Save player ranks, points, statistics, and match history.
+- Match players with others of similar skill levels.
+
+IMPORTANT:
+Do not simulate online multiplayer using bots or fake players.
+Do not simply display other characters locally.
+All players must actually connect through the internet and play together in the same match.
+
+If a multiplayer backend or server configuration is required, implement the necessary integration and clearly identify the required setup instead of pretending online multiplayer is working.
+
+Preserve the existing game and all its features.

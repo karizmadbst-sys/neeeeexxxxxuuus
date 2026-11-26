@@ -1,0 +1,28 @@
+**Improve the Crosshair, Aim Assist, and Weapon Systems.**
+
+**1. FIX THE WHITE CROSSHAIR**
+- The white aiming dot must no longer be attached to the player's character or body.
+- Position the crosshair correctly at the center of the screen.
+- Keep it fixed on the screen while the player moves, runs, jumps, or turns.
+- Make weapon aiming and bullet direction follow the crosshair accurately.
+
+**2. ADD AIM ASSIST TO WEAPONS**
+- Implement a smooth Aim Assist system for supported weapons.
+- When an enemy is near the crosshair, gently help the player track the enemy.
+- Make Aim Assist follow the enemy's movement naturally without sudden camera snapping.
+- Support automatic and semi-automatic weapons.
+- Add adjustable Aim Assist strength in the game settings.
+- Do not make aiming automatic or guarantee headshots.
+
+**3. AWM SNIPER EXCEPTION**
+- Add the AWM sniper rifle to the game.
+- Give it realistic sniper mechanics, high damage, long range, and bolt-action reloading.
+- Add a proper sniper scope with adjustable zoom.
+- AWM MUST NOT HAVE AIM ASSIST OR AIM BOT.
+- The player must manually aim and track enemies when using AWM.
+- Never automatically lock onto enemies with AWM.
+
+**4. IMPORTANT**
+- Make all aiming systems work correctly on Android and PC.
+- Preserve existing weapons, controls, animations, and gameplay.
+- Fix aiming bugs and ensure bullets travel in the correct shooting direction.

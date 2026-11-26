@@ -1,0 +1,909 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default-Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Global Hardened Security Primitives
+    // =========================================================================
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function canonicalPairId(a, b) {
+      return a < b ? (a + '_' + b) : (b + '_' + a);
+    }
+
+    function isValidPlayerIdString(val) {
+      return val is string && val.size() >= 3 && val.size() <= 64 && val.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidNumericIdString(val) {
+      return val is string && val.size() >= 8 && val.size() <= 12 && val.matches('^[0-9]{8,12}$');
+    }
+
+    function isValidPlatform(val) {
+      return val is string && val in ['pc', 'android', 'ios', 'tablet'];
+    }
+
+    function isValidGender(val) {
+      return val is string && val in ['male', 'female', 'unset'];
+    }
+
+    function isValidTier(val) {
+      return val is string && val in ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Heroic', 'Master'];
+    }
+
+    function isValidVaultMap(v) {
+      return v is map
+        && v.keys().hasAll([
+          'credits',
+          'ownedIds',
+          'equippedGliderId',
+          'equippedEmoteId',
+          'equippedGlooSkinId',
+          'equippedAvatarId',
+          'equippedBannerId',
+          'equippedWeaponSkins',
+          'equippedEmoteWheel',
+          'equippedArmoryIds'
+        ])
+        && v.keys().hasOnly([
+          'credits',
+          'ownedIds',
+          'equippedOutfitId',
+          'equippedGliderId',
+          'equippedEmoteId',
+          'equippedGlooSkinId',
+          'equippedAvatarId',
+          'equippedBannerId',
+          'equippedWeaponSkins',
+          'equippedEmoteWheel',
+          'equippedArmoryIds'
+        ])
+        && v.credits is number && v.credits >= 0 && v.credits <= 100000000
+        && v.ownedIds is list && v.ownedIds.size() >= 1 && v.ownedIds.size() <= 500 && v.ownedIds[0] is string
+        && (!('equippedOutfitId' in v) || v.equippedOutfitId == null || (v.equippedOutfitId is string && v.equippedOutfitId.size() <= 64))
+        && v.equippedGliderId is string && v.equippedGliderId.size() >= 1 && v.equippedGliderId.size() <= 64
+        && v.equippedEmoteId is string && v.equippedEmoteId.size() >= 1 && v.equippedEmoteId.size() <= 64
+        && v.equippedGlooSkinId is string && v.equippedGlooSkinId.size() >= 1 && v.equippedGlooSkinId.size() <= 64
+        && v.equippedAvatarId is string && v.equippedAvatarId.size() >= 1 && v.equippedAvatarId.size() <= 64
+        && v.equippedBannerId is string && v.equippedBannerId.size() >= 1 && v.equippedBannerId.size() <= 64
+        && v.equippedWeaponSkins is map && v.equippedWeaponSkins.size() <= 64
+        && v.equippedEmoteWheel is list && v.equippedEmoteWheel.size() == 8
+        && v.equippedArmoryIds is map && v.equippedArmoryIds.size() <= 32;
+    }
+
+    function isValidCloudStateMap(cs) {
+      return cs is map
+        && cs.keys().hasOnly([
+          'settings',
+          'controlSettings',
+          'selectedCharacterId',
+          'customization',
+          'charOverrides',
+          'checkpoints'
+        ])
+        && (!('settings' in cs) || (cs.settings is map && cs.settings.size() <= 64))
+        && (!('controlSettings' in cs) || (cs.controlSettings is map && cs.controlSettings.size() <= 8))
+        && (!('selectedCharacterId' in cs) || (cs.selectedCharacterId is string && cs.selectedCharacterId.size() >= 1 && cs.selectedCharacterId.size() <= 32))
+        && (!('customization' in cs) || (cs.customization is map && cs.customization.size() <= 32))
+        && (!('charOverrides' in cs) || (cs.charOverrides is map && cs.charOverrides.size() <= 32))
+        && (!('checkpoints' in cs) || (cs.checkpoints is map && cs.checkpoints.size() <= 16));
+    }
+
+    function isValidPartyMemberEntry(m, expectedUid) {
+      return m is map
+        && m.keys().hasAll(['uid', 'playerId', 'numericId', 'username', 'avatarId', 'level', 'status', 'joinedAt'])
+        && m.keys().hasOnly(['uid', 'playerId', 'numericId', 'username', 'avatarId', 'level', 'status', 'joinedAt'])
+        && m.uid is string && m.uid == expectedUid && isValidId(m.uid)
+        && isValidPlayerIdString(m.playerId)
+        && isValidNumericIdString(m.numericId)
+        && m.username is string && m.username.size() >= 2 && m.username.size() <= 18
+        && m.avatarId is string && m.avatarId.size() >= 1 && m.avatarId.size() <= 64
+        && m.level is number && m.level >= 1 && m.level <= 300
+        && m.status is string && m.status in ['ready', 'not-ready', 'in-match']
+        && m.joinedAt is number && m.joinedAt >= 0;
+    }
+
+    // =========================================================================
+    // Validation Blueprints (Standalone Helpers — Anti-Update-Gap)
+    // =========================================================================
+
+    function isValidPlayerPrivate(data, uid) {
+      return data.keys().hasAll(['uid', 'playerId', 'numericId', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'playerId', 'numericId', 'email', 'photoURL', 'vault', 'cloudState', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid == uid && data.uid == request.auth.uid
+        && isValidPlayerIdString(data.playerId)
+        && isValidNumericIdString(data.numericId)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 512))
+        && (!('vault' in data) || isValidVaultMap(data.vault))
+        && (!('cloudState' in data) || isValidCloudStateMap(data.cloudState))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPublicProfile(data, uid) {
+      return data.keys().hasAll([
+          'uid',
+          'playerId',
+          'numericId',
+          'username',
+          'usernameChanged',
+          'avatarId',
+          'bannerId',
+          'avatarCharacterId',
+          'gender',
+          'platform',
+          'level',
+          'xp',
+          'rp',
+          'tier',
+          'totalMatches',
+          'wins',
+          'eliminations',
+          'deaths',
+          'totalDamage',
+          'bestKillsInMatch',
+          'rankedMatches',
+          'rankedWins',
+          'rankedKills',
+          'rankedTop3',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'playerId',
+          'numericId',
+          'username',
+          'usernameChanged',
+          'avatarId',
+          'bannerId',
+          'avatarCharacterId',
+          'gender',
+          'platform',
+          'level',
+          'xp',
+          'rp',
+          'tier',
+          'totalMatches',
+          'wins',
+          'eliminations',
+          'deaths',
+          'totalDamage',
+          'bestKillsInMatch',
+          'rankedMatches',
+          'rankedWins',
+          'rankedKills',
+          'rankedTop3',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.uid is string && data.uid == uid && data.uid == request.auth.uid
+        && isValidPlayerIdString(data.playerId)
+        && isValidNumericIdString(data.numericId)
+        && data.username is string && data.username.size() >= 2 && data.username.size() <= 18
+        && data.usernameChanged is bool
+        && data.avatarId is string && data.avatarId.size() >= 1 && data.avatarId.size() <= 64
+        && data.bannerId is string && data.bannerId.size() >= 1 && data.bannerId.size() <= 64
+        && data.avatarCharacterId is string && data.avatarCharacterId.size() >= 1 && data.avatarCharacterId.size() <= 32
+        && isValidGender(data.gender)
+        && isValidPlatform(data.platform)
+        && data.level is number && data.level >= 1 && data.level <= 300
+        && data.xp is number && data.xp >= 0 && data.xp <= 1000000
+        && data.rp is number && data.rp >= 0 && data.rp <= 100000
+        && isValidTier(data.tier)
+        && data.totalMatches is number && data.totalMatches >= 0 && data.totalMatches <= 1000000
+        && data.wins is number && data.wins >= 0 && data.wins <= 1000000
+        && data.eliminations is number && data.eliminations >= 0 && data.eliminations <= 10000000
+        && data.deaths is number && data.deaths >= 0 && data.deaths <= 1000000
+        && data.totalDamage is number && data.totalDamage >= 0 && data.totalDamage <= 1000000000
+        && data.bestKillsInMatch is number && data.bestKillsInMatch >= 0 && data.bestKillsInMatch <= 200
+        && data.rankedMatches is number && data.rankedMatches >= 0 && data.rankedMatches <= 1000000
+        && data.rankedWins is number && data.rankedWins >= 0 && data.rankedWins <= 1000000
+        && data.rankedKills is number && data.rankedKills >= 0 && data.rankedKills <= 10000000
+        && data.rankedTop3 is number && data.rankedTop3 >= 0 && data.rankedTop3 <= 1000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPlayerIdIndex(data, idKey) {
+      return data.keys().hasAll(['idKey', 'uid', 'playerId', 'numericId', 'createdAt'])
+        && data.keys().hasOnly(['idKey', 'uid', 'playerId', 'numericId', 'createdAt'])
+        && data.idKey is string && data.idKey == idKey
+        && data.uid is string && data.uid == request.auth.uid
+        && isValidPlayerIdString(data.playerId)
+        && isValidNumericIdString(data.numericId)
+        && (data.idKey == data.playerId || data.idKey == data.numericId)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidUsernameReservation(data, usernameKey) {
+      return data.keys().hasAll(['usernameKey', 'usernameLower', 'username', 'uid', 'playerId', 'updatedAt'])
+        && data.keys().hasOnly(['usernameKey', 'usernameLower', 'username', 'uid', 'playerId', 'updatedAt'])
+        && data.usernameKey is string && data.usernameKey == usernameKey && isValidId(data.usernameKey)
+        && data.usernameLower is string && data.usernameLower.size() >= 2 && data.usernameLower.size() <= 64
+        && data.username is string && data.username.size() >= 2 && data.username.size() <= 18
+        && data.uid is string && data.uid == request.auth.uid && isValidId(data.uid)
+        && isValidPlayerIdString(data.playerId)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFriendRequest(data, reqId) {
+      return data.keys().hasAll([
+          'requestId',
+          'fromUid',
+          'toUid',
+          'fromPlayerId',
+          'fromNumericId',
+          'toPlayerId',
+          'toNumericId',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'requestId',
+          'fromUid',
+          'toUid',
+          'fromPlayerId',
+          'fromNumericId',
+          'toPlayerId',
+          'toNumericId',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.requestId is string && data.requestId == reqId
+        && isValidId(data.fromUid)
+        && isValidId(data.toUid)
+        && data.fromUid != data.toUid
+        && data.requestId == (data.fromUid + '_' + data.toUid)
+        && isValidPlayerIdString(data.fromPlayerId)
+        && isValidNumericIdString(data.fromNumericId)
+        && isValidPlayerIdString(data.toPlayerId)
+        && isValidNumericIdString(data.toNumericId)
+        && data.status is string && data.status in ['pending', 'accepted', 'rejected']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFriendship(data, friendshipId) {
+      return data.keys().hasAll(['friendshipId', 'users', 'playerIds', 'createdAt'])
+        && data.keys().hasOnly(['friendshipId', 'users', 'playerIds', 'createdAt'])
+        && data.friendshipId is string && data.friendshipId == friendshipId
+        && data.users is list && data.users.size() == 2
+        && isValidId(data.users[0]) && isValidId(data.users[1])
+        && data.users[0] < data.users[1]
+        && data.friendshipId == (data.users[0] + '_' + data.users[1])
+        && data.playerIds is list && data.playerIds.size() == 2
+        && isValidPlayerIdString(data.playerIds[0]) && isValidPlayerIdString(data.playerIds[1])
+        && data.createdAt is timestamp;
+    }
+
+    function isValidPresence(data, uid) {
+      return data.keys().hasAll(['uid', 'playerId', 'status', 'platform', 'lastSeenAt'])
+        && data.keys().hasOnly(['uid', 'playerId', 'status', 'platform', 'lastSeenAt'])
+        && data.uid is string && data.uid == uid && data.uid == request.auth.uid
+        && isValidPlayerIdString(data.playerId)
+        && data.status is string && data.status in ['online', 'in-squad', 'in-match', 'offline']
+        && isValidPlatform(data.platform)
+        && data.lastSeenAt is timestamp;
+    }
+
+    function isValidParty(data, partyId) {
+      return data.keys().hasAll([
+          'partyId',
+          'leaderUid',
+          'leaderPlayerId',
+          'maxSize',
+          'memberUids',
+          'members',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'partyId',
+          'leaderUid',
+          'leaderPlayerId',
+          'maxSize',
+          'memberUids',
+          'members',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.partyId is string && data.partyId == partyId && data.partyId.size() >= 3 && data.partyId.size() <= 64
+        && isValidId(data.leaderUid)
+        && isValidPlayerIdString(data.leaderPlayerId)
+        && data.maxSize is number && (data.maxSize == 2 || data.maxSize == 4)
+        && data.memberUids is list
+        && data.memberUids.size() >= 1
+        && data.memberUids.size() <= 4
+        && data.memberUids.size() <= data.maxSize
+        && data.leaderUid in data.memberUids
+        && data.members is map
+        && data.members.size() == data.memberUids.size()
+        && data.members.keys().hasAll(data.memberUids)
+        && data.members.keys().hasOnly(data.memberUids)
+        && isValidId(data.memberUids[0])
+        && isValidPartyMemberEntry(data.members[data.memberUids[0]], data.memberUids[0])
+        && (data.memberUids.size() < 2 || (isValidId(data.memberUids[1]) && data.memberUids[1] != data.memberUids[0] && isValidPartyMemberEntry(data.members[data.memberUids[1]], data.memberUids[1])))
+        && (data.memberUids.size() < 3 || (isValidId(data.memberUids[2]) && data.memberUids[2] != data.memberUids[0] && data.memberUids[2] != data.memberUids[1] && isValidPartyMemberEntry(data.members[data.memberUids[2]], data.memberUids[2])))
+        && (data.memberUids.size() < 4 || (isValidId(data.memberUids[3]) && data.memberUids[3] != data.memberUids[0] && data.memberUids[3] != data.memberUids[1] && data.memberUids[3] != data.memberUids[2] && isValidPartyMemberEntry(data.members[data.memberUids[3]], data.memberUids[3])))
+        && data.members[data.leaderUid].playerId == data.leaderPlayerId
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPartyMembership(data, uid) {
+      return data.keys().hasAll(['uid', 'partyId', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'partyId', 'updatedAt'])
+        && data.uid is string && data.uid == uid && data.uid == request.auth.uid
+        && data.partyId is string && data.partyId.size() >= 3 && data.partyId.size() <= 64 && isValidId(data.partyId)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPartyInvite(data, inviteId) {
+      return data.keys().hasAll([
+          'inviteId',
+          'partyId',
+          'fromUid',
+          'fromPlayerId',
+          'fromNumericId',
+          'fromName',
+          'fromTier',
+          'fromLevel',
+          'fromAvatarId',
+          'toUid',
+          'toPlayerId',
+          'maxSize',
+          'memberCount',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'inviteId',
+          'partyId',
+          'fromUid',
+          'fromPlayerId',
+          'fromNumericId',
+          'fromName',
+          'fromTier',
+          'fromLevel',
+          'fromAvatarId',
+          'toUid',
+          'toPlayerId',
+          'maxSize',
+          'memberCount',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.inviteId is string && data.inviteId == inviteId
+        && data.partyId is string && data.partyId.size() >= 3 && data.partyId.size() <= 64 && isValidId(data.partyId)
+        && isValidId(data.fromUid)
+        && isValidId(data.toUid)
+        && data.fromUid != data.toUid
+        && data.inviteId == (data.partyId + '_' + data.toUid)
+        && isValidPlayerIdString(data.fromPlayerId)
+        && isValidNumericIdString(data.fromNumericId)
+        && data.fromName is string && data.fromName.size() >= 2 && data.fromName.size() <= 18
+        && isValidTier(data.fromTier)
+        && data.fromLevel is number && data.fromLevel >= 1 && data.fromLevel <= 300
+        && data.fromAvatarId is string && data.fromAvatarId.size() >= 1 && data.fromAvatarId.size() <= 64
+        && isValidPlayerIdString(data.toPlayerId)
+        && data.maxSize is number && (data.maxSize == 2 || data.maxSize == 4)
+        && data.memberCount is number && data.memberCount >= 1 && data.memberCount < 4
+        && data.status is string && data.status in ['pending', 'accepted', 'rejected', 'cancelled']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection Match Blocks
+    // =========================================================================
+
+    // 1. Private Account & PII Isolation (/players/{uid})
+    match /players/{uid} {
+      allow get: if isVerifiedUser() && isValidId(uid) && isOwner(uid);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(uid)
+        && isOwner(uid)
+        && isValidPlayerPrivate(incoming(), uid)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(uid)
+        && isOwner(uid)
+        && isValidPlayerPrivate(incoming(), uid)
+        && incoming().uid == existing().uid
+        && incoming().playerId == existing().playerId
+        && incoming().numericId == existing().numericId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'photoURL', 'vault', 'cloudState', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // 2. Public Game Profile (/publicProfiles/{uid}) — Zero PII
+    match /publicProfiles/{uid} {
+      allow get: if isVerifiedUser() && isValidId(uid);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(uid)
+        && isOwner(uid)
+        && isValidPublicProfile(incoming(), uid)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(uid)
+        && isOwner(uid)
+        && isValidPublicProfile(incoming(), uid)
+        && incoming().uid == existing().uid
+        && incoming().playerId == existing().playerId
+        && incoming().numericId == existing().numericId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'username',
+          'usernameChanged',
+          'avatarId',
+          'bannerId',
+          'avatarCharacterId',
+          'gender',
+          'platform',
+          'level',
+          'xp',
+          'rp',
+          'tier',
+          'totalMatches',
+          'wins',
+          'eliminations',
+          'deaths',
+          'totalDamage',
+          'bestKillsInMatch',
+          'rankedMatches',
+          'rankedWins',
+          'rankedKills',
+          'rankedTop3',
+          'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // 3. Immutable Player ID Uniqueness & O(1) Lookup Index (/playerIdIndex/{idKey})
+    match /playerIdIndex/{idKey} {
+      allow get: if isVerifiedUser() && isValidId(idKey);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(idKey)
+        && isValidPlayerIdIndex(incoming(), idKey)
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // 3b. Unique Case-Insensitive Username Reservations (/usernames/{usernameKey})
+    match /usernames/{usernameKey} {
+      allow get: if isVerifiedUser() && isValidId(usernameKey);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(usernameKey)
+        && isValidUsernameReservation(incoming(), usernameKey)
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(usernameKey)
+        && isValidUsernameReservation(incoming(), usernameKey)
+        && existing().uid == request.auth.uid
+        && incoming().uid == existing().uid
+        && incoming().playerId == existing().playerId
+        && incoming().usernameKey == existing().usernameKey
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['usernameLower', 'username', 'updatedAt']);
+      allow delete: if isVerifiedUser()
+        && isValidId(usernameKey)
+        && existing().uid == request.auth.uid;
+    }
+
+    // 4. Friend Requests (/friendRequests/{requestId})
+    match /friendRequests/{requestId} {
+      allow get: if isVerifiedUser()
+        && isValidId(requestId)
+        && (
+          (
+            resource != null
+            && (existing().fromUid == request.auth.uid || existing().toUid == request.auth.uid)
+          )
+          || (
+            resource == null
+            && (
+              requestId.matches('^' + request.auth.uid + '_[a-zA-Z0-9_\\-]+$')
+              || requestId.matches('^[a-zA-Z0-9_\\-]+_' + request.auth.uid + '$')
+            )
+          )
+        );
+      allow list: if isVerifiedUser()
+        && (resource.data.toUid == request.auth.uid || resource.data.fromUid == request.auth.uid);
+      allow create: if isVerifiedUser()
+        && isValidId(requestId)
+        && isValidFriendRequest(incoming(), requestId)
+        && incoming().fromUid == request.auth.uid
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/publicProfiles/$(incoming().toUid))
+        && !exists(/databases/$(database)/documents/friendships/$(canonicalPairId(incoming().fromUid, incoming().toUid)));
+      allow update: if isVerifiedUser()
+        && isValidId(requestId)
+        && isValidFriendRequest(incoming(), requestId)
+        && existing().status == 'pending'
+        && existing().toUid == request.auth.uid
+        && incoming().requestId == existing().requestId
+        && incoming().fromUid == existing().fromUid
+        && incoming().toUid == existing().toUid
+        && incoming().fromPlayerId == existing().fromPlayerId
+        && incoming().fromNumericId == existing().fromNumericId
+        && incoming().toPlayerId == existing().toPlayerId
+        && incoming().toNumericId == existing().toNumericId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && (
+          incoming().status == 'rejected'
+          || (
+            incoming().status == 'accepted'
+            && existsAfter(/databases/$(database)/documents/friendships/$(canonicalPairId(existing().fromUid, existing().toUid)))
+          )
+        );
+      allow delete: if isVerifiedUser()
+        && isValidId(requestId)
+        && (
+          (existing().status == 'pending' && existing().fromUid == request.auth.uid)
+          || (existing().status == 'rejected' && (existing().fromUid == request.auth.uid || existing().toUid == request.auth.uid))
+          || (
+            existing().status == 'accepted'
+            && (existing().fromUid == request.auth.uid || existing().toUid == request.auth.uid)
+            && !exists(/databases/$(database)/documents/friendships/$(canonicalPairId(existing().fromUid, existing().toUid)))
+          )
+        );
+    }
+
+    // 5. Mutual Friendships (/friendships/{friendshipId})
+    match /friendships/{friendshipId} {
+      allow get: if isVerifiedUser()
+        && isValidId(friendshipId)
+        && (
+          (resource != null && request.auth.uid in existing().users)
+          || (
+            resource == null
+            && (
+              friendshipId.matches('^' + request.auth.uid + '_[a-zA-Z0-9_\\-]+$')
+              || friendshipId.matches('^[a-zA-Z0-9_\\-]+_' + request.auth.uid + '$')
+            )
+          )
+        );
+      allow list: if isVerifiedUser()
+        && request.auth.uid in resource.data.users;
+      allow create: if isVerifiedUser()
+        && isValidId(friendshipId)
+        && isValidFriendship(incoming(), friendshipId)
+        && request.auth.uid in incoming().users
+        && incoming().createdAt == request.time
+        && (
+          (
+            existsAfter(/databases/$(database)/documents/friendRequests/$(incoming().users[0] + '_' + incoming().users[1]))
+            && getAfter(/databases/$(database)/documents/friendRequests/$(incoming().users[0] + '_' + incoming().users[1])).data.status == 'accepted'
+            && getAfter(/databases/$(database)/documents/friendRequests/$(incoming().users[0] + '_' + incoming().users[1])).data.toUid == request.auth.uid
+          )
+          || (
+            existsAfter(/databases/$(database)/documents/friendRequests/$(incoming().users[1] + '_' + incoming().users[0]))
+            && getAfter(/databases/$(database)/documents/friendRequests/$(incoming().users[1] + '_' + incoming().users[0])).data.status == 'accepted'
+            && getAfter(/databases/$(database)/documents/friendRequests/$(incoming().users[1] + '_' + incoming().users[0])).data.toUid == request.auth.uid
+          )
+        );
+      allow update: if false;
+      allow delete: if isVerifiedUser()
+        && isValidId(friendshipId)
+        && request.auth.uid in existing().users;
+    }
+
+    // 6. Real-Time Online Presence (/presence/{uid})
+    match /presence/{uid} {
+      allow get: if isVerifiedUser()
+        && isValidId(uid)
+        && (
+          isOwner(uid)
+          || exists(/databases/$(database)/documents/friendships/$(canonicalPairId(request.auth.uid, uid)))
+        );
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(uid)
+        && isOwner(uid)
+        && isValidPresence(incoming(), uid)
+        && incoming().lastSeenAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(uid)
+        && isOwner(uid)
+        && isValidPresence(incoming(), uid)
+        && incoming().uid == existing().uid
+        && incoming().playerId == existing().playerId
+        && incoming().lastSeenAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'platform', 'lastSeenAt']);
+      allow delete: if false;
+    }
+
+    // 7. Party / Squad Rooms (/parties/{partyId})
+    match /parties/{partyId} {
+      allow get: if isVerifiedUser()
+        && isValidId(partyId)
+        && (
+          (
+            resource != null
+            && (
+              request.auth.uid in existing().memberUids
+              || exists(/databases/$(database)/documents/partyInvites/$(partyId + '_' + request.auth.uid))
+            )
+          )
+          || (
+            resource == null
+            && (
+              (
+                exists(/databases/$(database)/documents/partyMemberships/$(request.auth.uid))
+                && get(/databases/$(database)/documents/partyMemberships/$(request.auth.uid)).data.partyId == partyId
+              )
+              || exists(/databases/$(database)/documents/partyInvites/$(partyId + '_' + request.auth.uid))
+            )
+          )
+        );
+      allow list: if isVerifiedUser()
+        && request.auth.uid in resource.data.memberUids;
+      allow create: if isVerifiedUser()
+        && isValidId(partyId)
+        && isValidParty(incoming(), partyId)
+        && incoming().leaderUid == request.auth.uid
+        && incoming().memberUids.size() == 1
+        && incoming().memberUids[0] == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && !exists(/databases/$(database)/documents/partyMemberships/$(request.auth.uid))
+        && existsAfter(/databases/$(database)/documents/partyMemberships/$(request.auth.uid))
+        && getAfter(/databases/$(database)/documents/partyMemberships/$(request.auth.uid)).data.partyId == partyId;
+      allow update: if isVerifiedUser()
+        && isValidId(partyId)
+        && isValidParty(incoming(), partyId)
+        && incoming().partyId == existing().partyId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Self updates own readiness / status / metadata
+          (
+            request.auth.uid in existing().memberUids
+            && incoming().diff(existing()).affectedKeys().hasOnly(['members', 'updatedAt'])
+            && incoming().leaderUid == existing().leaderUid
+            && incoming().leaderPlayerId == existing().leaderPlayerId
+            && incoming().maxSize == existing().maxSize
+            && incoming().memberUids == existing().memberUids
+            && incoming().members.diff(existing().members).affectedKeys().hasOnly([request.auth.uid])
+            && incoming().members[request.auth.uid].uid == existing().members[request.auth.uid].uid
+            && incoming().members[request.auth.uid].playerId == existing().members[request.auth.uid].playerId
+            && incoming().members[request.auth.uid].numericId == existing().members[request.auth.uid].numericId
+            && incoming().members[request.auth.uid].joinedAt == existing().members[request.auth.uid].joinedAt
+          )
+          // Action 2: Invited friend accepts pending invite and joins party
+          || (
+            !(request.auth.uid in existing().memberUids)
+            && existing().memberUids.size() < existing().maxSize
+            && incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'members', 'updatedAt'])
+            && incoming().leaderUid == existing().leaderUid
+            && incoming().leaderPlayerId == existing().leaderPlayerId
+            && incoming().maxSize == existing().maxSize
+            && incoming().memberUids.size() == existing().memberUids.size() + 1
+            && incoming().memberUids.hasAll(existing().memberUids)
+            && request.auth.uid in incoming().memberUids
+            && incoming().members.diff(existing().members).affectedKeys().hasOnly([request.auth.uid])
+            && incoming().members[request.auth.uid].status in ['ready', 'not-ready']
+            && exists(/databases/$(database)/documents/partyInvites/$(partyId + '_' + request.auth.uid))
+            && get(/databases/$(database)/documents/partyInvites/$(partyId + '_' + request.auth.uid)).data.status == 'pending'
+            && getAfter(/databases/$(database)/documents/partyInvites/$(partyId + '_' + request.auth.uid)).data.status == 'accepted'
+            && !exists(/databases/$(database)/documents/partyMemberships/$(request.auth.uid))
+            && existsAfter(/databases/$(database)/documents/partyMemberships/$(request.auth.uid))
+            && getAfter(/databases/$(database)/documents/partyMemberships/$(request.auth.uid)).data.partyId == partyId
+          )
+          // Action 3: Self leaves multi-member party (auto-transfers leader if leader leaves)
+          || (
+            request.auth.uid in existing().memberUids
+            && existing().memberUids.size() > 1
+            && !(request.auth.uid in incoming().memberUids)
+            && existing().memberUids.hasAll(incoming().memberUids)
+            && incoming().memberUids.size() == existing().memberUids.size() - 1
+            && incoming().members.diff(existing().members).affectedKeys().hasOnly([request.auth.uid])
+            && incoming().maxSize == existing().maxSize
+            && !existsAfter(/databases/$(database)/documents/partyMemberships/$(request.auth.uid))
+            && (
+              (
+                existing().leaderUid != request.auth.uid
+                && incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'members', 'updatedAt'])
+                && incoming().leaderUid == existing().leaderUid
+                && incoming().leaderPlayerId == existing().leaderPlayerId
+              )
+              || (
+                existing().leaderUid == request.auth.uid
+                && incoming().diff(existing()).affectedKeys().hasOnly(['leaderUid', 'leaderPlayerId', 'memberUids', 'members', 'updatedAt'])
+                && incoming().leaderUid != request.auth.uid
+                && incoming().leaderUid in incoming().memberUids
+                && incoming().leaderPlayerId == existing().members[incoming().leaderUid].playerId
+              )
+            )
+          )
+          // Action 4: Party leader removes (kicks) another member
+          || (
+            existing().leaderUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'members', 'updatedAt'])
+            && incoming().leaderUid == existing().leaderUid
+            && incoming().leaderPlayerId == existing().leaderPlayerId
+            && incoming().maxSize == existing().maxSize
+            && request.auth.uid in incoming().memberUids
+            && existing().memberUids.hasAll(incoming().memberUids)
+            && incoming().memberUids.size() == existing().memberUids.size() - 1
+            && incoming().members.diff(existing().members).affectedKeys().size() == 1
+            && incoming().members.diff(existing().members).removedKeys().size() == 1
+          )
+          // Action 5: Party leader transfers leadership to another existing member
+          || (
+            existing().leaderUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['leaderUid', 'leaderPlayerId', 'updatedAt'])
+            && incoming().leaderUid != existing().leaderUid
+            && incoming().leaderUid in existing().memberUids
+            && incoming().leaderPlayerId == existing().members[incoming().leaderUid].playerId
+            && incoming().memberUids == existing().memberUids
+            && incoming().members == existing().members
+            && incoming().maxSize == existing().maxSize
+          )
+          // Action 6: Party leader resizes party capacity (2 or 4, >= current size)
+          || (
+            existing().leaderUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['maxSize', 'updatedAt'])
+            && incoming().leaderUid == existing().leaderUid
+            && incoming().leaderPlayerId == existing().leaderPlayerId
+            && incoming().memberUids == existing().memberUids
+            && incoming().members == existing().members
+            && incoming().maxSize >= existing().memberUids.size()
+          )
+        );
+      allow delete: if isVerifiedUser()
+        && isValidId(partyId)
+        && request.auth.uid in existing().memberUids
+        && existing().memberUids.size() == 1
+        && !existsAfter(/databases/$(database)/documents/partyMemberships/$(request.auth.uid));
+    }
+
+    // 8. Single-Party Membership Lock (/partyMemberships/{uid})
+    match /partyMemberships/{uid} {
+      allow get: if isVerifiedUser() && isValidId(uid) && isOwner(uid);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(uid)
+        && isOwner(uid)
+        && isValidPartyMembership(incoming(), uid)
+        && incoming().updatedAt == request.time;
+      allow update: if false;
+      allow delete: if isVerifiedUser()
+        && isValidId(uid)
+        && (
+          isOwner(uid)
+          || (
+            exists(/databases/$(database)/documents/parties/$(existing().partyId))
+            && get(/databases/$(database)/documents/parties/$(existing().partyId)).data.leaderUid == request.auth.uid
+          )
+        );
+    }
+
+    // 9. Friend-Only Party Invitations (/partyInvites/{inviteId})
+    match /partyInvites/{inviteId} {
+      allow get: if isVerifiedUser()
+        && isValidId(inviteId)
+        && (
+          (
+            resource != null
+            && (existing().fromUid == request.auth.uid || existing().toUid == request.auth.uid)
+          )
+          || (
+            resource == null
+            && (
+              inviteId.matches('^[a-zA-Z0-9_\\-]+_' + request.auth.uid + '$')
+              || (
+                exists(/databases/$(database)/documents/partyMemberships/$(request.auth.uid))
+                && inviteId.matches('^' + get(/databases/$(database)/documents/partyMemberships/$(request.auth.uid)).data.partyId + '_[a-zA-Z0-9_\\-]+$')
+              )
+            )
+          )
+        );
+      allow list: if isVerifiedUser()
+        && (resource.data.toUid == request.auth.uid || resource.data.fromUid == request.auth.uid);
+      allow create: if isVerifiedUser()
+        && isValidId(inviteId)
+        && isValidPartyInvite(incoming(), inviteId)
+        && incoming().fromUid == request.auth.uid
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/friendships/$(canonicalPairId(incoming().fromUid, incoming().toUid)))
+        && exists(/databases/$(database)/documents/parties/$(incoming().partyId))
+        && get(/databases/$(database)/documents/parties/$(incoming().partyId)).data.leaderUid == request.auth.uid
+        && get(/databases/$(database)/documents/parties/$(incoming().partyId)).data.memberUids.size() < get(/databases/$(database)/documents/parties/$(incoming().partyId)).data.maxSize
+        && !(incoming().toUid in get(/databases/$(database)/documents/parties/$(incoming().partyId)).data.memberUids)
+        && exists(/databases/$(database)/documents/presence/$(incoming().toUid))
+        && get(/databases/$(database)/documents/presence/$(incoming().toUid)).data.status == 'online';
+      allow update: if isVerifiedUser()
+        && isValidId(inviteId)
+        && isValidPartyInvite(incoming(), inviteId)
+        && existing().status == 'pending'
+        && incoming().inviteId == existing().inviteId
+        && incoming().partyId == existing().partyId
+        && incoming().fromUid == existing().fromUid
+        && incoming().fromPlayerId == existing().fromPlayerId
+        && incoming().fromNumericId == existing().fromNumericId
+        && incoming().fromName == existing().fromName
+        && incoming().fromTier == existing().fromTier
+        && incoming().fromLevel == existing().fromLevel
+        && incoming().fromAvatarId == existing().fromAvatarId
+        && incoming().toUid == existing().toUid
+        && incoming().toPlayerId == existing().toPlayerId
+        && incoming().maxSize == existing().maxSize
+        && incoming().memberCount == existing().memberCount
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && (
+          (
+            existing().toUid == request.auth.uid
+            && (
+              incoming().status == 'rejected'
+              || (
+                incoming().status == 'accepted'
+                && existsAfter(/databases/$(database)/documents/partyMemberships/$(request.auth.uid))
+                && getAfter(/databases/$(database)/documents/partyMemberships/$(request.auth.uid)).data.partyId == existing().partyId
+              )
+            )
+          )
+          || (existing().fromUid == request.auth.uid && incoming().status == 'cancelled')
+        );
+      allow delete: if isVerifiedUser()
+        && isValidId(inviteId)
+        && (existing().fromUid == request.auth.uid || existing().toUid == request.auth.uid)
+        && (
+          existing().status in ['accepted', 'rejected', 'cancelled']
+          || !exists(/databases/$(database)/documents/parties/$(existing().partyId))
+        );
+    }
+  }
+}

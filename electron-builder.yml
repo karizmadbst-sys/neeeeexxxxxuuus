@@ -1,0 +1,37 @@
+appId: com.nexusroyale.game
+productName: NEXUS ROYALE
+copyright: Copyright © 2026 NEXUS ROYALE
+asar: true
+directories:
+  output: dist-electron
+  buildResources: build
+files:
+  - dist/**/*
+  - electron/**/*
+  - firebase-applet-config.json
+  - package.json
+  - "!server/**"
+  - "!server.ts"
+  - "!android/**"
+  - "!src/**"
+  - "!.github/**"
+  - "!firestore*"
+  - "!firebase-blueprint.json"
+  - "!.env*"
+  - "!node_modules/**/*"
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: NEXUS ROYALE
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  artifactName: NEXUS-ROYALE-Setup-${version}.${ext}

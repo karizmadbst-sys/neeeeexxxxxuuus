@@ -1,0 +1,612 @@
+@import "tailwindcss";
+
+@layer base {
+  html,
+  body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: #070b14;
+    color: #f1f5f9;
+    font-family: 'Cairo', 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+
+  #app {
+    width: var(--app-vw, 100dvw);
+    height: var(--app-vh, 100dvh);
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: #070b14;
+  }
+
+  html[dir="rtl"],
+  html[dir="rtl"] * {
+    letter-spacing: 0 !important;
+  }
+
+  [data-ltr="true"] {
+    direction: ltr;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+  }
+}
+
+/* Custom utility classes for tactical game UI (no backdrop-filter over WebGL) */
+.nexus-panel {
+  background-color: rgba(10, 16, 29, 0.92);
+  border: 1px solid rgba(56, 189, 248, 0.24);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65);
+}
+
+.nexus-panel-subtle {
+  background-color: rgba(10, 16, 29, 0.84);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.nexus-btn-primary {
+  background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+  border: 1px solid rgba(251, 146, 60, 0.7);
+  color: #ffffff;
+  transition: transform 140ms ease, filter 140ms ease, box-shadow 140ms ease;
+}
+
+.nexus-btn-primary:hover {
+  filter: brightness(1.08);
+  box-shadow: 0 0 26px rgba(249, 115, 22, 0.38);
+}
+
+.nexus-btn-primary:active {
+  transform: scale(0.98);
+}
+
+.nexus-btn-secondary {
+  background-color: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  color: #e2e8f0;
+  transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease;
+}
+
+.nexus-btn-secondary:hover {
+  background-color: rgba(30, 41, 59, 0.96);
+  border-color: rgba(56, 189, 248, 0.55);
+}
+
+.nexus-btn-secondary:active {
+  transform: scale(0.98);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Responsive safe-area helpers for notched phones, Dynamic Islands, punch-holes & tablets */
+.safe-pad {
+  padding-top: max(1rem, env(safe-area-inset-top, 0px));
+  padding-right: max(1rem, env(safe-area-inset-right, 0px));
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  padding-left: max(1rem, env(safe-area-inset-left, 0px));
+}
+
+html[data-compact-landscape="true"] .safe-pad {
+  padding-top: max(0.375rem, env(safe-area-inset-top, 0px));
+  padding-right: max(0.5rem, env(safe-area-inset-right, 0px));
+  padding-bottom: max(0.375rem, env(safe-area-inset-bottom, 0px));
+  padding-left: max(0.5rem, env(safe-area-inset-left, 0px));
+}
+
+/* Edge HUD safe-area anchors */
+.hud-safe-tl {
+  top: max(0.4rem, env(safe-area-inset-top, 0px));
+  left: max(0.5rem, env(safe-area-inset-left, 0px));
+}
+
+.hud-safe-tc {
+  top: max(0.375rem, env(safe-area-inset-top, 0px));
+}
+
+.hud-safe-tr {
+  top: max(0.4rem, env(safe-area-inset-top, 0px));
+  right: max(0.5rem, env(safe-area-inset-right, 0px));
+}
+
+.hud-safe-bc {
+  bottom: max(0.4rem, env(safe-area-inset-bottom, 0px));
+}
+
+.hud-safe-left {
+  left: max(0.5rem, env(safe-area-inset-left, 0px));
+}
+
+@media (min-width: 1024px) and (min-height: 600px) {
+  .hud-safe-tl {
+    top: max(0.75rem, env(safe-area-inset-top, 0px));
+    left: max(0.75rem, env(safe-area-inset-left, 0px));
+  }
+
+  .hud-safe-tc {
+    top: max(0.5rem, env(safe-area-inset-top, 0px));
+  }
+
+  .hud-safe-tr {
+    top: max(0.75rem, env(safe-area-inset-top, 0px));
+    right: max(0.75rem, env(safe-area-inset-right, 0px));
+  }
+
+  .hud-safe-bc {
+    bottom: max(0.625rem, env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* Subtle keyframes for the landscape orientation guard icon */
+@keyframes nexusRotatePhone {
+  0%, 18% {
+    transform: rotate(0deg);
+  }
+  45%, 78% {
+    transform: rotate(-90deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+.nexus-rotate-phone-anim {
+  animation: nexusRotatePhone 2.4s ease-in-out infinite;
+}
+
+@keyframes nexusAuthBackdropDrift {
+  0% {
+    transform: scale(1.02) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: scale(1.07) translate3d(-1.2%, -0.8%, 0);
+  }
+  100% {
+    transform: scale(1.02) translate3d(0, 0, 0);
+  }
+}
+
+.nexus-auth-backdrop-anim {
+  animation: nexusAuthBackdropDrift 26s ease-in-out infinite;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nexus-auth-backdrop-anim,
+  .nexus-rotate-phone-anim {
+    animation: none !important;
+  }
+}
+
+/* Custom scrollbar inside modal panels (Settings / Shop / Characters) */
+.nexus-scroll {
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.nexus-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.nexus-scroll::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.nexus-scroll::-webkit-scrollbar-thumb {
+  background: rgba(56, 189, 248, 0.35);
+  border-radius: 3px;
+}
+
+/* Phone Landscape Compact Overrides (orientation=landscape && height < 500px) */
+html[data-compact-landscape="true"] .nr-lobby-profile {
+  min-height: 40px;
+  padding: 0.25rem 0.45rem;
+  gap: 0.4rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-avatar {
+  width: 2rem;
+  height: 2rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-top-btn {
+  min-height: 34px;
+  min-width: 34px;
+  padding: 0.25rem 0.5rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-currency-pill {
+  min-height: 34px;
+  padding: 0.2rem 0.3rem 0.2rem 0.45rem;
+  gap: 0.35rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-currency-pill [data-action="currency-add"] {
+  width: 24px;
+  height: 24px;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-top-settings {
+  display: none;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-main {
+  direction: ltr;
+  align-items: flex-start;
+  padding-top: 0.35rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  width: clamp(114px, 19vw, 136px);
+}
+
+html[data-compact-landscape="true"] .nr-lobby-nav > .nr-mobile-only-nav {
+  display: flex;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-nav > button {
+  direction: ltr;
+  min-height: clamp(25px, 7.2dvh, 33px);
+  padding: 0.2rem 0.45rem;
+  justify-content: flex-start;
+  gap: 0.35rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-nav > button > span:first-child {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-nav > button > span:last-child {
+  font-size: 0.625rem;
+  letter-spacing: 0.02em;
+  unicode-bidi: plaintext;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-rot {
+  padding: 0.2rem 0.35rem;
+  gap: 0.25rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-rot > button {
+  height: 30px;
+  min-height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-footer {
+  height: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-dock {
+  position: absolute;
+  right: max(0.5rem, env(safe-area-inset-right, 0px));
+  bottom: max(0.375rem, env(safe-area-inset-bottom, 0px));
+  width: min(268px, 48vw);
+  gap: 0.25rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-dock [data-action="open-map-select"] {
+  padding: 0.3rem;
+  gap: 0.4rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-dock [data-mode-select] {
+  min-height: 30px;
+  padding: 0.2rem 0.35rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-dock [data-nav="battle-royale"],
+html[data-compact-landscape="true"] .nr-lobby-dock [data-nav="ranked"] {
+  min-height: 28px;
+  padding: 0.2rem 0.4rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-dock [data-action="start-match"] {
+  min-height: 36px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.8rem;
+}
+
+html[data-compact-landscape="true"] .nr-studio-header {
+  gap: 0.35rem;
+}
+
+html[data-compact-landscape="true"] .nr-studio-header button,
+html[data-compact-landscape="true"] .nr-studio-header .nexus-panel {
+  min-height: 34px;
+  padding-top: 0.3rem;
+  padding-bottom: 0.3rem;
+}
+
+html[data-compact-landscape="true"] .nr-friends-drawer-wrap {
+  top: max(3.15rem, calc(env(safe-area-inset-top, 0px) + 2.85rem));
+  right: max(0.5rem, env(safe-area-inset-right, 0px));
+}
+
+html[data-compact-landscape="true"] .nr-friends-panel-body {
+  width: min(268px, 52vw);
+}
+
+html[data-compact-landscape="true"] .nr-friends-scroll {
+  max-height: min(112px, 26dvh);
+}
+
+html[data-compact-landscape="true"] .nr-lobby-squad-bar {
+  padding: 0.25rem;
+  gap: 0.2rem;
+}
+
+html[data-compact-landscape="true"] .nr-lobby-squad-bar button[data-squad-size] {
+  min-height: 26px;
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
+}
+
+html[data-compact-landscape="true"] .nr-party-members-scroll {
+  max-height: 76px;
+}
+
+html[data-compact-landscape="true"] .nr-party-member-card {
+  padding: 0.18rem 0.3rem;
+}
+
+/* Mobile Portrait Lobby Optimization (all Android & iOS phone widths < 640px, all aspect ratios) */
+html[data-compact-portrait="true"] .safe-pad {
+  padding-top: max(0.45rem, env(safe-area-inset-top, 0px));
+  padding-right: max(0.5rem, env(safe-area-inset-right, 0px));
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom, 0px));
+  padding-left: max(0.5rem, env(safe-area-inset-left, 0px));
+}
+
+html[data-compact-portrait="true"] .nr-lobby-top-settings {
+  display: none;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-profile {
+  max-width: clamp(154px, 49vw, 206px);
+  min-height: clamp(38px, 5.1dvh, 46px);
+  padding: 0.25rem 0.45rem;
+  gap: 0.4rem;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-avatar {
+  width: clamp(26px, 3.8dvh, 34px);
+  height: clamp(26px, 3.8dvh, 34px);
+}
+
+html[data-compact-portrait="true"] .nr-lobby-profile [data-role="profile-username"] {
+  font-size: clamp(10px, 2.7vw, 11px);
+}
+
+html[data-compact-portrait="true"] .nr-lobby-profile [data-role="profile-level"] {
+  font-size: 9px;
+  padding: 0.0625rem 0.3rem;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-profile [data-role="profile-tier"],
+html[data-compact-portrait="true"] .nr-lobby-profile [data-role="profile-xp-text"] {
+  font-size: 8.5px;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-top-btn {
+  min-height: clamp(36px, 4.9dvh, 40px);
+  min-width: clamp(36px, 4.9dvh, 40px);
+  padding: 0.25rem 0.45rem;
+  justify-content: center;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-currency-pill {
+  min-height: 30px;
+  padding: 0.15rem 0.25rem 0.15rem 0.4rem;
+  gap: 0.3rem;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-currency-pill [data-role="lobby-currency-amount"] {
+  font-size: 11px;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-currency-pill [data-action="currency-add"] {
+  width: 22px;
+  height: 22px;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-main {
+  direction: ltr;
+  align-items: flex-start;
+  padding-top: clamp(0.3rem, 1.1dvh, 0.75rem);
+  padding-bottom: clamp(0.25rem, 0.75dvh, 0.5rem);
+}
+
+html[data-compact-portrait="true"] .nr-lobby-nav {
+  display: flex;
+  flex-direction: column;
+  width: clamp(124px, 34vw, 140px);
+  gap: clamp(4px, 0.7dvh, 7px);
+}
+
+html[data-compact-portrait="true"] .nr-lobby-nav > .nr-mobile-only-nav {
+  display: flex;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-nav > button {
+  direction: ltr;
+  width: 100%;
+  min-height: clamp(36px, 4.9dvh, 43px);
+  padding: 0.25rem 0.45rem;
+  justify-content: flex-start;
+  gap: 0.35rem;
+  border-radius: 0.375rem;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-nav > button > span:first-child {
+  width: clamp(14px, 2dvh, 17px);
+  height: clamp(14px, 2dvh, 17px);
+}
+
+html[data-compact-portrait="true"] .nr-lobby-nav > button > span:last-child {
+  font-size: clamp(8.75px, 2.4vw, 10.75px);
+  letter-spacing: 0.015em;
+  line-height: 1.15;
+  text-align: left;
+  unicode-bidi: plaintext;
+}
+
+html[data-compact-portrait="true"] .nr-friends-drawer-wrap {
+  top: calc(max(0.45rem, env(safe-area-inset-top, 0px)) + clamp(76px, 9.8dvh, 88px));
+  right: max(0.5rem, env(safe-area-inset-right, 0px));
+}
+
+html[data-compact-portrait="true"] .nr-friends-panel-body {
+  width: min(276px, 78vw);
+}
+
+html[data-compact-portrait="true"] .nr-friends-scroll {
+  max-height: min(195px, 28dvh);
+}
+
+html[data-compact-portrait="true"] .nr-lobby-footer {
+  justify-content: center;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-dock {
+  width: 100%;
+  max-width: 420px;
+  margin-left: auto;
+  margin-right: auto;
+  gap: clamp(4px, 0.7dvh, 6px);
+}
+
+html[data-compact-portrait="true"] .nr-lobby-squad-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.25rem 0.35rem;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-squad-head > span {
+  font-size: 8.5px;
+  line-height: 1.1;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-squad-grid {
+  gap: 0.25rem;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-squad-bar button[data-squad-size] {
+  min-height: clamp(28px, 3.8dvh, 33px);
+  padding: 0.15rem 0.25rem;
+  font-size: clamp(9px, 2.35vw, 10px);
+}
+
+html[data-compact-portrait="true"] .nr-lobby-squad-strip {
+  padding-top: 0.2rem;
+}
+
+html[data-compact-portrait="true"] .nr-party-members-scroll {
+  max-height: 104px;
+}
+
+html[data-compact-portrait="true"] .nr-party-member-card {
+  padding: 0.2rem 0.35rem;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-map-card {
+  padding: 0.3rem 0.45rem;
+  gap: 0.5rem;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-map-thumb {
+  width: clamp(50px, 14vw, 64px);
+}
+
+html[data-compact-portrait="true"] .nr-lobby-map-card [data-role="lobby-mode-badge"] {
+  font-size: 8.5px;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-map-card [data-role="selected-map-name"] {
+  font-size: clamp(11px, 3.1vw, 13px);
+  line-height: 1.15;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-map-card [data-role="selected-map-sub"] {
+  font-size: clamp(9px, 2.4vw, 10px);
+}
+
+html[data-compact-portrait="true"] .nr-lobby-map-card [data-role="map-select-pill"] {
+  padding: 0.25rem 0.45rem;
+  font-size: 9px;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-modes {
+  gap: 0.25rem;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-modes > button {
+  min-height: clamp(36px, 4.7dvh, 42px);
+  padding: 0.2rem 0.35rem;
+  gap: 0.25rem;
+  font-size: clamp(8.5px, 2.25vw, 9.75px);
+  letter-spacing: 0.015em;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-modes > button > span:first-child {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-modes > button > span:last-child {
+  white-space: normal;
+  line-height: 1.05;
+  text-overflow: clip;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-hubs {
+  gap: 0.25rem;
+}
+
+html[data-compact-portrait="true"] .nr-lobby-hubs > button {
+  min-height: clamp(32px, 4.2dvh, 38px);
+  padding: 0.2rem 0.4rem;
+  font-size: clamp(9px, 2.35vw, 10px);
+}
+
+html[data-compact-portrait="true"] .nr-lobby-start {
+  min-height: clamp(42px, 5.4dvh, 48px);
+  padding: 0.45rem 0.85rem;
+  font-size: clamp(13px, 3.6vw, 15px);
+}
+
+html[data-compact-portrait="true"] .nr-lobby-start [data-role="start-sub-label"] {
+  font-size: clamp(9.5px, 2.5vw, 10.5px);
+}
+
+html[data-compact-portrait="true"] .nr-studio-header {
+  gap: 0.35rem;
+}
+
+html[data-compact-portrait="true"] .nr-studio-header button,
+html[data-compact-portrait="true"] .nr-studio-header .nexus-panel {
+  min-height: 36px;
+  padding-top: 0.3rem;
+  padding-bottom: 0.3rem;
+}
+
+

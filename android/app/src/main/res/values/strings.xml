@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">NEXUS ROYALE</string>
+    <string name="title_activity_main">NEXUS ROYALE</string>
+    <string name="package_name">com.nexusroyale.game</string>
+    <string name="custom_url_scheme">com.nexusroyale.game</string>
+</resources>

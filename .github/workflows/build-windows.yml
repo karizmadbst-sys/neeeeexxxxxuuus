@@ -1,0 +1,107 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Optional semantic version for Windows installer (e.g. 1.0.0)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-exe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-exe:
+    name: Build Windows NSIS EXE Installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install npm dependencies
+        shell: pwsh
+        run: |
+          if (Test-Path package-lock.json) {
+            npm ci --legacy-peer-deps
+          } else {
+            npm install --legacy-peer-deps --no-audit --no-fund
+          }
+
+      - name: Resolve release version
+        shell: pwsh
+        env:
+          INPUT_VERSION_NAME: ${{ inputs.version_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_STRING: ${{ github.ref }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          if ($env:REF_STRING -like "refs/tags/v*") {
+            $ver = $env:REF_NAME.TrimStart('v')
+          } elseif (-not [string]::IsNullOrWhiteSpace($env:INPUT_VERSION_NAME)) {
+            $ver = $env:INPUT_VERSION_NAME.Trim()
+          } else {
+            $ver = "1.0.$($env:RUN_NUMBER)"
+          }
+          "RELEASE_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using Windows installer version: $ver"
+
+      - name: Validate active backend URL configuration
+        shell: pwsh
+        env:
+          RESOLVED_BACKEND_URL: ${{ vars.VITE_BACKEND_URL || secrets.VITE_BACKEND_URL || 'https://ais-pre-o45j3avytqf2cxv34uusrr-658856767272.europe-west3.run.app' }}
+        run: |
+          if ($env:RESOLVED_BACKEND_URL -notmatch '^https://[^/]+' -or $env:RESOLVED_BACKEND_URL -match 'localhost|127\.0\.0\.1|ais-pre-6tyidv2pt6sibhftxu2mbu-884864254163\.europe-west2\.run\.app|ais-pre-kgjgpnjbzvdsadro4u6lnw-688318389065\.europe-west3\.run\.app') {
+            Write-Error "Invalid or retired VITE_BACKEND_URL ('$($env:RESOLVED_BACKEND_URL)'). Provide an active public HTTPS backend URL."
+            exit 1
+          }
+          Write-Host "Verified active backend URL: $($env:RESOLVED_BACKEND_URL)"
+
+      - name: Build production web bundle
+        shell: pwsh
+        env:
+          VITE_BACKEND_URL: ${{ vars.VITE_BACKEND_URL || secrets.VITE_BACKEND_URL || 'https://ais-pre-o45j3avytqf2cxv34uusrr-658856767272.europe-west3.run.app' }}
+        run: npm run build
+
+      - name: Ensure Windows desktop icon assets
+        shell: pwsh
+        run: node scripts/ensure-desktop-icon.mjs
+
+      - name: Build Windows NSIS EXE Installer
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          npx electron-builder --win nsis --x64 --publish never "-c.extraMetadata.version=$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem -Path dist-electron
+
+      - name: Upload Windows EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-royale-windows-exe
+          path: dist-electron/*.exe
+          if-no-files-found: error
+
+      - name: Publish Windows EXE to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-electron/*.exe
+          generate_release_notes: true

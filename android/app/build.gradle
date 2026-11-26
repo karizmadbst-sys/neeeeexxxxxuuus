@@ -1,0 +1,112 @@
+import groovy.json.JsonSlurper
+
+apply plugin: 'com.android.application'
+
+android {
+    namespace = "com.nexusroyale.game"
+    compileSdk = rootProject.ext.compileSdkVersion
+    def envVersionCode = System.getenv("ANDROID_VERSION_CODE")
+    def envVersionName = System.getenv("ANDROID_VERSION_NAME")
+
+    defaultConfig {
+        applicationId "com.nexusroyale.game"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode (envVersionCode != null && envVersionCode.isInteger() ? envVersionCode.toInteger() : 1)
+        versionName (envVersionName != null && !envVersionName.trim().isEmpty() ? envVersionName.trim() : "1.0.0")
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+
+    def keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+    def keystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+    def keyAliasEnv = System.getenv("ANDROID_KEY_ALIAS")
+    def keyPasswordEnv = System.getenv("ANDROID_KEY_PASSWORD")
+    def hasReleaseSigning = (
+        keystorePath != null && !keystorePath.trim().isEmpty() &&
+        file(keystorePath).exists() &&
+        keystorePassword != null && !keystorePassword.isEmpty() &&
+        keyAliasEnv != null && !keyAliasEnv.trim().isEmpty() &&
+        keyPasswordEnv != null && !keyPasswordEnv.isEmpty()
+    )
+
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(keystorePath)
+                storePassword keystorePassword
+                keyAlias keyAliasEnv
+                keyPassword keyPasswordEnv
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig hasReleaseSigning ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+// Optional validation if android/app/google-services.json is present (NEXUS ROYAL ID uses Firebase Web SDK & does not require Google OAuth)
+def servicesJSON = file('google-services.json')
+if (servicesJSON.exists() && servicesJSON.text?.trim()) {
+    def parsedServices
+    try {
+        parsedServices = new JsonSlurper().parseText(servicesJSON.text)
+    } catch (Exception e) {
+        throw new GradleException("Invalid JSON in android/app/google-services.json: ${e.message}")
+    }
+
+    def expectedProjectId = 'gen-lang-client-0539248410'
+    def expectedProjectNumber = '359305394572'
+    def expectedPackageName = 'com.nexusroyale.game'
+
+    if (parsedServices?.project_info?.project_id != expectedProjectId) {
+        throw new GradleException(
+            "android/app/google-services.json project_id mismatch: found '${parsedServices?.project_info?.project_id}', expected '${expectedProjectId}'."
+        )
+    }
+    if (parsedServices?.project_info?.project_number?.toString() != expectedProjectNumber) {
+        throw new GradleException(
+            "android/app/google-services.json project_number mismatch: found '${parsedServices?.project_info?.project_number}', expected '${expectedProjectNumber}'."
+        )
+    }
+
+    def matchingClient = parsedServices?.client?.find {
+        it?.client_info?.android_client_info?.package_name == expectedPackageName
+    }
+    if (!matchingClient) {
+        throw new GradleException(
+            "android/app/google-services.json does not contain Android package '${expectedPackageName}'."
+        )
+    }
+
+    apply plugin: 'com.google.gms.google-services'
+}

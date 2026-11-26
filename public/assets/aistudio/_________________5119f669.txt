@@ -1,0 +1,25 @@
+**ADVANCED CHARACTER MOVEMENT AND HAND-TO-HAND COMBAT**
+
+1. WINDOW ENTRY:
+- Allow the character to enter buildings through accessible windows.
+- Add realistic window vaulting and climbing animations.
+- Allow players to jump through open windows and land safely inside buildings.
+- Fix collision issues that prevent window entry.
+
+2. SITTING SYSTEM:
+- Allow the character to sit on chairs, sofas, benches, and other suitable objects.
+- Add realistic sitting and standing animations.
+- Make sure the character is correctly positioned when sitting.
+- Add an INTERACT button when sitting is possible.
+
+3. BARE-HAND COMBAT:
+- Add a complete punching system when the character has no weapon equipped.
+- Allow players to punch enemies using their fists.
+- Add realistic left and right punching animations.
+- Add punch damage, attack range, hit detection, and impact reactions.
+- Add punching sounds and smooth combat animations.
+- Allow players to move and fight using their fists.
+- Make sure punches can damage both AI bots and other players in supported game modes.
+
+IMPORTANT:
+Preserve all existing weapons, characters, maps, controls, and gameplay features. Do not break existing systems. Test every new feature on Android and PC.

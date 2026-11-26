@@ -1,0 +1,69 @@
+Upgrade the entire game HUD and inventory system using real, separate, interactive graphical icons instead of text.
+
+### 1. Separate HUD Icons
+- Display every HUD element as an individual graphical icon, not text.
+- Create separate icons for backpack, weapons, health, ammo, armor, helmet, medkits, reload, scope, jump, crouch, prone, sprint, punch, and weapon switching.
+- Each icon must be independent and movable.
+- Allow the player to drag and drop each icon anywhere on the screen.
+- Allow resizing and adjusting transparency for every icon.
+- Add an Edit HUD mode with Save, Cancel, and Reset buttons.
+- Save the player's layout permanently, including after restarting the game.
+- Never group all icons into one image or fixed panel.
+
+### 2. Backpack Inventory
+When the player opens the backpack, display a visual inventory made entirely of icons.
+
+Show separate item icons for:
+- Every weapon the player owns.
+- Ammunition for each weapon.
+- Health and medkits.
+- Armor and helmets.
+- Other collected items.
+
+Display item quantities using small visual number indicators, not descriptive text.
+
+### 3. Drag and Drop Trash System
+- Add a visible trash-bin icon inside the backpack.
+- Allow the player to drag any unwanted weapon or item onto the trash bin to remove it.
+- Show a clear visual effect when an item is successfully removed.
+- Update the inventory immediately.
+- Update weapon slots and ammunition correctly.
+- Do not allow accidental deletion without a clear drag-and-drop action.
+
+### 4. Visual Design
+- Use real high-quality PNG or SVG icons with transparent backgrounds.
+- Use recognizable weapon images and item illustrations.
+- Do not replace icons with text, letters, emojis, or plain rectangles.
+- Make icons clear, attractive, and easy to tap on mobile.
+- Support both Android and PC.
+- Make drag-and-drop work with touch input and mouse input.
+
+### 5. Important Requirements
+- Keep all existing game features and systems working.
+- Connect every icon to its actual gameplay function.
+- Do not create decorative icons that do nothing.
+- Test dragging, dropping, deleting, saving, reopening the backpack, and restarting the game.
+- Do not break the existing inventory, weapons, or HUD systems.
+
+### 6. Fully Functional HUD Editor Buttons
+
+Make all HUD editor buttons fully functional and properly connected to the game logic.
+
+- **SAVE:** Save the current icon positions, sizes, and transparency permanently. The saved layout must remain unchanged after closing and reopening the game.
+- **RESTART / RESET:** Restore all HUD icons to their original default positions and sizes. Ask for confirmation before resetting.
+- **BACK:** Return to the previous screen without breaking the game or losing previously saved settings.
+- **CANCEL:** Cancel the current unsaved changes and restore the last saved layout.
+- **EDIT:** Allow the player to freely move, resize, and arrange every icon.
+
+### Important Button Requirements
+- Every button must respond correctly when clicked or tapped.
+- SAVE must actually save the settings.
+- RESET must actually restore the default layout.
+- BACK must actually return to the previous screen.
+- CANCEL must actually discard unsaved changes.
+- Prevent buttons from being unresponsive or only decorative.
+- Show a small visual confirmation after a successful save or reset.
+- Support mouse clicks on PC and touch input on Android.
+- Test every button individually and fix all errors before finishing.
+
+Do not leave any button unfinished. Do not simulate functionality. Implement and test the actual actions.

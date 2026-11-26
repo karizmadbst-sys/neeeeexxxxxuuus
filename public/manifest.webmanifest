@@ -1,0 +1,10 @@
+{
+  "name": "NEXUS ROYALE",
+  "short_name": "NEXUS ROYALE",
+  "description": "NEXUS ROYALE — 100 fighters... only one survivor. 3D Battle Royale.",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#070b14",
+  "theme_color": "#070b14"
+}

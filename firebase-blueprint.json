@@ -1,0 +1,728 @@
+{
+  "entities": {
+    "PlayerPrivate": {
+      "title": "PlayerPrivate",
+      "description": "Private owner-only player account data containing PII (email) and private NX vault inventory/currency.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Authentication UID matching the document ID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "playerId": {
+          "type": "string",
+          "description": "Permanent unique backend-issued player ID (immutable).",
+          "minLength": 3,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "numericId": {
+          "type": "string",
+          "description": "Permanent unique 9-digit numeric player ID (immutable).",
+          "minLength": 8,
+          "maxLength": 12,
+          "pattern": "^[0-9]{8,12}$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "NEXUS ROYAL ID email address (PII, owner-only).",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Optional profile avatar URL.",
+          "maxLength": 512
+        },
+        "vault": {
+          "type": "object",
+          "description": "Private player wallet credits, owned shop items, and equipped cosmetic IDs."
+        },
+        "cloudState": {
+          "type": "object",
+          "description": "Synchronized cross-device settings, controls, operator customization overrides, and progression checkpoints."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of initial profile creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last private profile update."
+        }
+      },
+      "required": [
+        "uid",
+        "playerId",
+        "numericId",
+        "email",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PublicProfile": {
+      "title": "PublicProfile",
+      "description": "Public game profile without PII used for display, friends, and Player ID inspection.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Authentication UID matching the document ID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "playerId": {
+          "type": "string",
+          "description": "Permanent unique backend-issued player ID (immutable).",
+          "minLength": 3,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "numericId": {
+          "type": "string",
+          "description": "Permanent unique 9-digit numeric player ID (immutable).",
+          "minLength": 8,
+          "maxLength": 12,
+          "pattern": "^[0-9]{8,12}$"
+        },
+        "username": {
+          "type": "string",
+          "description": "Player display callsign (globally unique case-insensitively).",
+          "minLength": 2,
+          "maxLength": 18
+        },
+        "usernameChanged": {
+          "type": "boolean",
+          "description": "Tracks whether the player has customized their callsign."
+        },
+        "avatarId": {
+          "type": "string",
+          "description": "Equipped profile avatar identifier.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "bannerId": {
+          "type": "string",
+          "description": "Equipped profile banner identifier.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "avatarCharacterId": {
+          "type": "string",
+          "description": "Equipped 3D operator character identifier.",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "gender": {
+          "type": "string",
+          "enum": ["male", "female", "unset"],
+          "description": "Selected player gender badge."
+        },
+        "platform": {
+          "type": "string",
+          "enum": ["pc", "android", "ios", "tablet"],
+          "description": "Player platform."
+        },
+        "level": {
+          "type": "number",
+          "description": "Account progression level."
+        },
+        "xp": {
+          "type": "number",
+          "description": "Current XP within the current level."
+        },
+        "rp": {
+          "type": "number",
+          "description": "Ranked points."
+        },
+        "tier": {
+          "type": "string",
+          "enum": ["Bronze", "Silver", "Gold", "Platinum", "Diamond", "Heroic", "Master"],
+          "description": "Ranked tier derived from RP."
+        },
+        "totalMatches": {
+          "type": "number",
+          "description": "Career matches played."
+        },
+        "wins": {
+          "type": "number",
+          "description": "Career victories."
+        },
+        "eliminations": {
+          "type": "number",
+          "description": "Career eliminations."
+        },
+        "deaths": {
+          "type": "number",
+          "description": "Career deaths."
+        },
+        "totalDamage": {
+          "type": "number",
+          "description": "Career total damage dealt."
+        },
+        "bestKillsInMatch": {
+          "type": "number",
+          "description": "Single-match elimination record."
+        },
+        "rankedMatches": {
+          "type": "number",
+          "description": "Ranked matches played."
+        },
+        "rankedWins": {
+          "type": "number",
+          "description": "Ranked victories."
+        },
+        "rankedKills": {
+          "type": "number",
+          "description": "Ranked eliminations."
+        },
+        "rankedTop3": {
+          "type": "number",
+          "description": "Ranked top-3 finishes."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "uid",
+        "playerId",
+        "numericId",
+        "username",
+        "usernameChanged",
+        "avatarId",
+        "bannerId",
+        "avatarCharacterId",
+        "gender",
+        "platform",
+        "level",
+        "xp",
+        "rp",
+        "tier",
+        "totalMatches",
+        "wins",
+        "eliminations",
+        "deaths",
+        "totalDamage",
+        "bestKillsInMatch",
+        "rankedMatches",
+        "rankedWins",
+        "rankedKills",
+        "rankedTop3",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PlayerIdIndex": {
+      "title": "PlayerIdIndex",
+      "description": "Immutable O(1) lookup index mapping numericId or playerId to Firebase UID and preventing duplicate IDs.",
+      "type": "object",
+      "properties": {
+        "idKey": {
+          "type": "string",
+          "description": "Indexed numericId or playerId key matching the document ID.",
+          "minLength": 3,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "playerId": {
+          "type": "string",
+          "description": "Owner permanent playerId.",
+          "minLength": 3,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "numericId": {
+          "type": "string",
+          "description": "Owner permanent 9-digit numericId.",
+          "minLength": 8,
+          "maxLength": 12,
+          "pattern": "^[0-9]{8,12}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": [
+        "idKey",
+        "uid",
+        "playerId",
+        "numericId",
+        "createdAt"
+      ]
+    },
+    "FriendRequest": {
+      "title": "FriendRequest",
+      "description": "Direct friend request between two players keyed deterministically as fromUid_toUid.",
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "description": "Deterministic ID equal to fromUid_toUid.",
+          "minLength": 3,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fromUid": {
+          "type": "string",
+          "description": "Sender Firebase UID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "toUid": {
+          "type": "string",
+          "description": "Recipient Firebase UID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "fromPlayerId": {
+          "type": "string",
+          "description": "Sender permanent playerId.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "fromNumericId": {
+          "type": "string",
+          "description": "Sender 9-digit numericId.",
+          "minLength": 8,
+          "maxLength": 12
+        },
+        "toPlayerId": {
+          "type": "string",
+          "description": "Recipient permanent playerId.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "toNumericId": {
+          "type": "string",
+          "description": "Recipient 9-digit numericId.",
+          "minLength": 8,
+          "maxLength": 12
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "accepted", "rejected"],
+          "description": "Request lifecycle state; accepted and rejected are terminal."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "requestId",
+        "fromUid",
+        "toUid",
+        "fromPlayerId",
+        "fromNumericId",
+        "toPlayerId",
+        "toNumericId",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Friendship": {
+      "title": "Friendship",
+      "description": "Mutual friendship record keyed as sorted uidA_uidB.",
+      "type": "object",
+      "properties": {
+        "friendshipId": {
+          "type": "string",
+          "description": "Canonical sorted document ID uidA_uidB.",
+          "minLength": 3,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "users": {
+          "type": "array",
+          "description": "Lexicographically sorted pair [uidA, uidB] of size 2."
+        },
+        "playerIds": {
+          "type": "array",
+          "description": "Pair of corresponding permanent playerIds of size 2."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": [
+        "friendshipId",
+        "users",
+        "playerIds",
+        "createdAt"
+      ]
+    },
+    "Presence": {
+      "title": "Presence",
+      "description": "Live online status document readable only by self and accepted friends.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID matching document ID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "playerId": {
+          "type": "string",
+          "description": "Owner permanent playerId.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "enum": ["online", "in-squad", "in-match", "offline"],
+          "description": "Current real-time player activity status."
+        },
+        "platform": {
+          "type": "string",
+          "enum": ["pc", "android", "ios", "tablet"],
+          "description": "Active client platform."
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest presence heartbeat."
+        }
+      },
+      "required": [
+        "uid",
+        "playerId",
+        "status",
+        "platform",
+        "lastSeenAt"
+      ]
+    },
+    "Party": {
+      "title": "Party",
+      "description": "Real-time up-to-4-player squad room with leader metadata and member readiness states.",
+      "type": "object",
+      "properties": {
+        "partyId": {
+          "type": "string",
+          "description": "Unique party room identifier matching document ID.",
+          "minLength": 3,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "leaderUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the current party leader.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "leaderPlayerId": {
+          "type": "string",
+          "description": "Permanent playerId of the current party leader.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "maxSize": {
+          "type": "number",
+          "description": "Maximum party capacity (2 or 4)."
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "Ordered list of member Firebase UIDs (1 to 4)."
+        },
+        "members": {
+          "type": "object",
+          "description": "Map of member metadata keyed by Firebase UID (uid, playerId, numericId, username, avatarId, level, status, joinedAt)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of party creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest party update."
+        }
+      },
+      "required": [
+        "partyId",
+        "leaderUid",
+        "leaderPlayerId",
+        "maxSize",
+        "memberUids",
+        "members",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PartyMembership": {
+      "title": "PartyMembership",
+      "description": "Per-user active party pointer ensuring a player can belong to at most one party at a time.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID matching document ID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "partyId": {
+          "type": "string",
+          "description": "Active party identifier.",
+          "minLength": 3,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when membership was bound."
+        }
+      },
+      "required": ["uid", "partyId", "updatedAt"]
+    },
+    "PartyInvite": {
+      "title": "PartyInvite",
+      "description": "Friend-only party invitation keyed deterministically as partyId_toUid.",
+      "type": "object",
+      "properties": {
+        "inviteId": {
+          "type": "string",
+          "description": "Deterministic ID equal to partyId_toUid.",
+          "minLength": 5,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "partyId": {
+          "type": "string",
+          "description": "Target party identifier.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "fromUid": {
+          "type": "string",
+          "description": "Inviter Firebase UID (must be party leader).",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "fromPlayerId": {
+          "type": "string",
+          "description": "Inviter permanent playerId.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "fromNumericId": {
+          "type": "string",
+          "description": "Inviter 9-digit numericId.",
+          "minLength": 8,
+          "maxLength": 12
+        },
+        "fromName": {
+          "type": "string",
+          "description": "Inviter username.",
+          "minLength": 2,
+          "maxLength": 18
+        },
+        "fromTier": {
+          "type": "string",
+          "enum": ["Bronze", "Silver", "Gold", "Platinum", "Diamond", "Heroic", "Master"],
+          "description": "Inviter rank tier."
+        },
+        "fromLevel": {
+          "type": "number",
+          "description": "Inviter account level."
+        },
+        "fromAvatarId": {
+          "type": "string",
+          "description": "Inviter equipped avatar ID.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "toUid": {
+          "type": "string",
+          "description": "Invited friend Firebase UID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "toPlayerId": {
+          "type": "string",
+          "description": "Invited friend permanent playerId.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "maxSize": {
+          "type": "number",
+          "description": "Party capacity (2 or 4)."
+        },
+        "memberCount": {
+          "type": "number",
+          "description": "Party member count when invited."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "accepted", "rejected", "cancelled"],
+          "description": "Invite lifecycle state."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "inviteId",
+        "partyId",
+        "fromUid",
+        "fromPlayerId",
+        "fromNumericId",
+        "fromName",
+        "fromTier",
+        "fromLevel",
+        "fromAvatarId",
+        "toUid",
+        "toPlayerId",
+        "maxSize",
+        "memberCount",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UsernameReservation": {
+      "title": "UsernameReservation",
+      "description": "Case-insensitive global username reservation keyed by UTF-8 hex slug u_<hex>.",
+      "type": "object",
+      "properties": {
+        "usernameKey": {
+          "type": "string",
+          "description": "UTF-8 hex key u_<hex> matching document ID.",
+          "minLength": 4,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "usernameLower": {
+          "type": "string",
+          "description": "Lowercase normalized username string.",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "username": {
+          "type": "string",
+          "description": "Display callsign preserving player capitalization.",
+          "minLength": 2,
+          "maxLength": 18
+        },
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "playerId": {
+          "type": "string",
+          "description": "Owner permanent playerId.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the reservation."
+        }
+      },
+      "required": ["usernameKey", "usernameLower", "username", "uid", "playerId", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/players/{uid}": {
+      "schema": {
+        "$ref": "#/entities/PlayerPrivate"
+      },
+      "description": "Owner-only private account data (PII email, private NX vault, and cross-device cloudState)."
+    },
+    "/publicProfiles/{uid}": {
+      "schema": {
+        "$ref": "#/entities/PublicProfile"
+      },
+      "description": "Public player profile stats, level, rank, cosmetics, and permanent Player ID (no PII)."
+    },
+    "/playerIdIndex/{idKey}": {
+      "schema": {
+        "$ref": "#/entities/PlayerIdIndex"
+      },
+      "description": "Immutable uniqueness and O(1) lookup index mapping numericId and playerId to UID."
+    },
+    "/usernames/{usernameKey}": {
+      "schema": {
+        "$ref": "#/entities/UsernameReservation"
+      },
+      "description": "Case-insensitive unique username reservation mapping normalized username keys to UID."
+    },
+    "/friendRequests/{requestId}": {
+      "schema": {
+        "$ref": "#/entities/FriendRequest"
+      },
+      "description": "Pending and resolved friend requests strictly scoped to sender and recipient."
+    },
+    "/friendships/{friendshipId}": {
+      "schema": {
+        "$ref": "#/entities/Friendship"
+      },
+      "description": "Mutual friendships created atomically upon request acceptance."
+    },
+    "/presence/{uid}": {
+      "schema": {
+        "$ref": "#/entities/Presence"
+      },
+      "description": "Real-time player online status shared only with confirmed friends."
+    },
+    "/parties/{partyId}": {
+      "schema": {
+        "$ref": "#/entities/Party"
+      },
+      "description": "Real-time squad/party rooms up to 4 players with leader authority and member status."
+    },
+    "/partyMemberships/{uid}": {
+      "schema": {
+        "$ref": "#/entities/PartyMembership"
+      },
+      "description": "Per-user active party membership lock enforcing at most one party per player."
+    },
+    "/partyInvites/{inviteId}": {
+      "schema": {
+        "$ref": "#/entities/PartyInvite"
+      },
+      "description": "Pending and resolved friend-only party invitations keyed as partyId_toUid."
+    }
+  }
+}

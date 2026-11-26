@@ -1,0 +1,561 @@
+name: Build All (Android APK & Windows EXE)
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Optional semantic version for APK and Windows EXE (e.g. 1.0.0)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-all-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    outputs:
+      apk_path: ${{ steps.detect_apk.outputs.apk_path }}
+      apk_name: ${{ steps.detect_apk.outputs.apk_name }}
+      version_name: ${{ steps.version.outputs.version_name }}
+      apk_sha1: ${{ steps.verify_apk.outputs.apk_sha1 }}
+      apk_sha256: ${{ steps.verify_apk.outputs.apk_sha256 }}
+      signing_type: ${{ steps.verify_apk.outputs.signing_type }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android SDK (API 36)
+        run: |
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK_DIR" ]; then
+            echo "::error::Android SDK directory not found at $SDK_DIR." >&2
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+
+          if [ -x "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
+          else
+            SDKMANAGER=$(find "$SDK_DIR/cmdline-tools" -name sdkmanager -type f 2>/dev/null | sort -V | tail -n 1)
+          fi
+
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::Android sdkmanager not found under $SDK_DIR/cmdline-tools." >&2
+            exit 1
+          fi
+
+          echo "Using sdkmanager: $SDKMANAGER"
+          yes 2>/dev/null | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          echo "$SDK_DIR/platform-tools" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            echo "Installing dependencies from package-lock.json via npm ci..."
+            npm ci --legacy-peer-deps
+          elif [ -f npm-shrinkwrap.json ]; then
+            echo "Installing dependencies from npm-shrinkwrap.json via npm ci..."
+            npm ci --legacy-peer-deps
+          else
+            if [ -f bun.lock ]; then
+              echo "::notice::bun.lock detected without package-lock.json; installing via npm --legacy-peer-deps so Capacitor and native lifecycle scripts resolve cleanly."
+            fi
+            npm install --legacy-peer-deps --no-audit --no-fund
+          fi
+
+      - name: Validate active backend URL & Firebase config
+        env:
+          RESOLVED_BACKEND_URL: ${{ vars.VITE_BACKEND_URL || secrets.VITE_BACKEND_URL || 'https://ais-pre-o45j3avytqf2cxv34uusrr-658856767272.europe-west3.run.app' }}
+        run: |
+          if ! printf '%s' "$RESOLVED_BACKEND_URL" | grep -Eq '^https://[^/]+' \
+            || printf '%s' "$RESOLVED_BACKEND_URL" | grep -Eq 'localhost|127\.0\.0\.1|ais-pre-6tyidv2pt6sibhftxu2mbu-884864254163\.europe-west2\.run\.app|ais-pre-kgjgpnjbzvdsadro4u6lnw-688318389065\.europe-west3\.run\.app'; then
+            echo "::error::Invalid or retired VITE_BACKEND_URL ('$RESOLVED_BACKEND_URL'). Provide an active public HTTPS backend URL." >&2
+            exit 1
+          fi
+          if [ ! -f firebase-applet-config.json ]; then
+            echo "::error::Missing firebase-applet-config.json at repository root." >&2
+            exit 1
+          fi
+          node -e '
+            const fs = require("node:fs");
+            const assert = require("node:assert/strict");
+            const expected = {
+              projectId: "gen-lang-client-0539248410",
+              messagingSenderId: "359305394572",
+              appId: "1:359305394572:web:33464b0e35228f76cabea9",
+              firestoreDatabaseId: "ai-studio-remixremixremixr-8acde1bb-0f68-49e5-8b92-365bf5c2e31f",
+            };
+            for (const file of ["android/app/src/main/assets/firebase-client-config.json", "firebase-applet-config.json"]) {
+              assert.ok(fs.existsSync(file), `Missing ${file}`);
+              const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+              assert.equal(cfg.projectId, expected.projectId, `Unexpected projectId "${cfg.projectId}" in ${file}; expected "${expected.projectId}".`);
+              assert.equal(String(cfg.messagingSenderId || ""), expected.messagingSenderId, `Unexpected messagingSenderId "${cfg.messagingSenderId}" in ${file}; expected "${expected.messagingSenderId}".`);
+              assert.equal(cfg.appId, expected.appId, `Unexpected appId "${cfg.appId}" in ${file}; expected "${expected.appId}".`);
+              assert.equal(cfg.firestoreDatabaseId, expected.firestoreDatabaseId, `Unexpected firestoreDatabaseId "${cfg.firestoreDatabaseId}" in ${file}; expected "${expected.firestoreDatabaseId}".`);
+            }
+            console.log(`Verified Firebase config (${expected.projectId} / ${expected.firestoreDatabaseId}) and backend URL.`);
+          '
+
+      - name: Build production web bundle
+        env:
+          VITE_BACKEND_URL: ${{ vars.VITE_BACKEND_URL || secrets.VITE_BACKEND_URL || 'https://ais-pre-o45j3avytqf2cxv34uusrr-658856767272.europe-west3.run.app' }}
+        run: npm run build
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
+      - name: Validate and install Firebase & Android signing configuration
+        env:
+          ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ ! -f android/app/src/main/assets/firebase-client-config.json ]; then
+            echo "::error::Missing android/app/src/main/assets/firebase-client-config.json." >&2
+            exit 1
+          fi
+
+          if [ -n "$ANDROID_GOOGLE_SERVICES_JSON" ]; then
+            node -e '
+              const fs = require("node:fs");
+              const stripBomAndWrappers = (value) => {
+                let s = (value || "").replace(/^\uFEFF/, "").trim();
+                if (s.startsWith("```")) {
+                  s = s.replace(/^```[a-zA-Z0-9_-]*\s*\r?\n?/, "").replace(/\r?\n?```\s*$/, "").trim();
+                }
+                if ((s.startsWith("\"") && s.endsWith("\"")) || (s.startsWith("\x27") && s.endsWith("\x27"))) {
+                  const inner = s.slice(1, -1).trim();
+                  if (inner.startsWith("{") || /^[A-Za-z0-9+/_=-]+$/.test(inner.replace(/\s+/g, ""))) {
+                    s = inner;
+                  }
+                }
+                return s.replace(/^\uFEFF/, "").trim();
+              };
+
+              const rawInput = stripBomAndWrappers(process.env.ANDROID_GOOGLE_SERVICES_JSON || "");
+              let jsonText = rawInput;
+              if (rawInput && !rawInput.startsWith("{")) {
+                const b64 = rawInput.replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/");
+                const buf = Buffer.from(b64, "base64");
+                jsonText = stripBomAndWrappers(
+                  buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe
+                    ? buf.subarray(2).toString("utf16le")
+                    : buf.toString("utf8")
+                );
+              }
+
+              if (!jsonText || !jsonText.startsWith("{")) {
+                throw new Error("ANDROID_GOOGLE_SERVICES_JSON must be valid google-services.json JSON or base64-encoded JSON.");
+              }
+
+              const gs = JSON.parse(jsonText);
+              const appCfg = JSON.parse(fs.readFileSync("android/app/src/main/assets/firebase-client-config.json", "utf8"));
+              const expectedProject = appCfg.projectId;
+              const expectedNumber = String(appCfg.messagingSenderId || "");
+              const expectedPkg = "com.nexusroyale.game";
+
+              if (gs?.project_info?.project_id !== expectedProject) {
+                throw new Error(`google-services.json project_id "${gs?.project_info?.project_id}" does not match expected "${expectedProject}".`);
+              }
+              if (expectedNumber && String(gs?.project_info?.project_number || "") !== expectedNumber) {
+                throw new Error(`google-services.json project_number "${gs?.project_info?.project_number}" does not match expected "${expectedNumber}".`);
+              }
+              const clients = Array.isArray(gs?.client) ? gs.client : [];
+              const match = clients.find((c) => c?.client_info?.android_client_info?.package_name === expectedPkg);
+              if (!match) {
+                throw new Error(`google-services.json does not contain Android package "${expectedPkg}".`);
+              }
+              fs.writeFileSync("android/app/google-services.json", JSON.stringify(gs, null, 2) + "\n", "utf8");
+              console.log(`Verified optional android/app/google-services.json for ${expectedProject} / ${expectedPkg}`);
+            '
+          else
+            echo "::notice::ANDROID_GOOGLE_SERVICES_JSON not set; NEXUS ROYAL ID uses Firebase Web SDK via assets/firebase-client-config.json."
+          fi
+
+          SIGN_VARS_COUNT=0
+          [ -n "$ANDROID_KEYSTORE_BASE64" ] && SIGN_VARS_COUNT=$((SIGN_VARS_COUNT + 1))
+          [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && SIGN_VARS_COUNT=$((SIGN_VARS_COUNT + 1))
+          [ -n "$ANDROID_KEY_ALIAS" ] && SIGN_VARS_COUNT=$((SIGN_VARS_COUNT + 1))
+          [ -n "$ANDROID_KEY_PASSWORD" ] && SIGN_VARS_COUNT=$((SIGN_VARS_COUNT + 1))
+
+          if [ "$SIGN_VARS_COUNT" -eq 4 ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "${{ runner.temp }}/nexus-release.keystore"
+            if [ ! -s "${{ runner.temp }}/nexus-release.keystore" ]; then
+              echo "::error::Decoded ANDROID_KEYSTORE_BASE64 keystore file is empty." >&2
+              exit 1
+            fi
+            echo "ANDROID_KEYSTORE_PATH=${{ runner.temp }}/nexus-release.keystore" >> "$GITHUB_ENV"
+            echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_SIGNING_TYPE=GitHub Actions release signing certificate" >> "$GITHUB_ENV"
+            echo "ANDROID_SIGNING_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+
+            echo "Signing certificate type: GitHub Actions release signing certificate"
+            echo "Certificate alias: $ANDROID_KEY_ALIAS"
+            keytool -list -v -keystore "${{ runner.temp }}/nexus-release.keystore" -alias "$ANDROID_KEY_ALIAS" -storepass:env ANDROID_KEYSTORE_PASSWORD \
+              | grep -E '^\s*(Alias name:|SHA1:|SHA256:)' || true
+          elif [ "$SIGN_VARS_COUNT" -gt 0 ]; then
+            echo "::error::Incomplete Android release signing secrets ($SIGN_VARS_COUNT/4 set). Configure all four secrets (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD) or leave all four unset for debug-signed testing APKs." >&2
+            exit 1
+          else
+            echo "ANDROID_SIGNING_TYPE=Debug signing certificate (GitHub Actions debug keystore)" >> "$GITHUB_ENV"
+            echo "ANDROID_SIGNING_ALIAS=androiddebugkey" >> "$GITHUB_ENV"
+            echo "::notice::ANDROID_KEYSTORE_* secrets not configured; Gradle will sign the release APK with Android's debug keystore."
+          fi
+
+      - name: Resolve Android version
+        id: version
+        env:
+          INPUT_VERSION_NAME: ${{ inputs.version_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_STRING: ${{ github.ref }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          if [[ "$REF_STRING" == refs/tags/v* ]]; then
+            CLEAN_VER="${REF_NAME#v}"
+          elif [ -n "$INPUT_VERSION_NAME" ]; then
+            CLEAN_VER="$INPUT_VERSION_NAME"
+          else
+            CLEAN_VER="1.0.${RUN_NUMBER}"
+          fi
+          echo "ANDROID_VERSION_NAME=$CLEAN_VER" >> "$GITHUB_ENV"
+          echo "ANDROID_VERSION_CODE=$RUN_NUMBER" >> "$GITHUB_ENV"
+          echo "version_name=$CLEAN_VER" >> "$GITHUB_OUTPUT"
+          echo "Using Android versionName=$CLEAN_VER versionCode=$RUN_NUMBER"
+
+      - name: Build Android Release APK with Gradle
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Detect generated APK output path
+        id: detect_apk
+        run: |
+          APK_FILES=$(find android/app/build/outputs/apk -type f -name "*.apk" ! -name "*-unsigned.apk" | sort)
+          if [ -z "$APK_FILES" ]; then
+            APK_FILES=$(find android/app/build/outputs/apk -type f -name "*.apk" | sort)
+          fi
+          if [ -z "$APK_FILES" ]; then
+            echo "::error::No APK file generated under android/app/build/outputs/apk." >&2
+            exit 1
+          fi
+          APK_PATH=$(printf '%s\n' "$APK_FILES" | head -n 1)
+          APK_NAME=$(basename "$APK_PATH")
+          echo "Detected Android APK: $APK_PATH"
+          ls -lh "$APK_PATH"
+          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "apk_name=$APK_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Verify APK signing certificate, package & Firebase client config
+        id: verify_apk
+        env:
+          APK_PATH: ${{ steps.detect_apk.outputs.apk_path }}
+        run: |
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APKSIGNER=$(find "$SDK_DIR/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -n 1)
+          AAPT2=$(find "$SDK_DIR/build-tools" -name aapt2 -type f 2>/dev/null | sort -V | tail -n 1)
+
+          if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
+            echo "::error::apksigner not found under $SDK_DIR/build-tools." >&2
+            exit 1
+          fi
+          if [ -z "$AAPT2" ] || [ ! -x "$AAPT2" ]; then
+            echo "::error::aapt2 not found under $SDK_DIR/build-tools." >&2
+            exit 1
+          fi
+
+          VERIFY_DIR="${{ runner.temp }}/apk-verify"
+          rm -rf "$VERIFY_DIR"
+          mkdir -p "$VERIFY_DIR"
+          trap 'rm -rf "$VERIFY_DIR"' EXIT
+
+          "$AAPT2" dump badging "$APK_PATH" > "$VERIFY_DIR/badging.txt"
+          "$APKSIGNER" verify --print-certs "$APK_PATH" > "$VERIFY_DIR/certs.txt"
+          unzip -p "$APK_PATH" assets/firebase-client-config.json > "$VERIFY_DIR/assets-cfg.json"
+
+          export VERIFY_DIR
+          node -e '
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const assert = require("node:assert/strict");
+
+            const verifyDir = process.env.VERIFY_DIR;
+            const badging = fs.readFileSync(path.join(verifyDir, "badging.txt"), "utf8");
+            const pkgMatch = badging.match(/^package:\s*name=\x27([^\x27]+)\x27/m) || badging.match(/package:\s*name="([^"]+)"/);
+            const pkg = (pkgMatch ? pkgMatch[1] : "").trim();
+            assert.equal(pkg, "com.nexusroyale.game", `APK package name "${pkg}" != "com.nexusroyale.game"`);
+
+            const certs = fs.readFileSync(path.join(verifyDir, "certs.txt"), "utf8");
+            const normalizeHex = (raw) => String(raw || "").replace(/[:\s]+/g, "").toLowerCase();
+            const extractDigest = (labelRegex) => {
+              for (const line of certs.split(/\r?\n/)) {
+                if (/source\s+stamp/i.test(line)) continue;
+                const m = line.match(labelRegex);
+                if (m) return normalizeHex(m[1]);
+              }
+              return "";
+            };
+            const apkSha1Hex = extractDigest(/certificate\s+SHA-?1\s+digest\s*:\s*([0-9a-fA-F:\s]+)/i);
+            const apkSha256Hex = extractDigest(/certificate\s+SHA-?256\s+digest\s*:\s*([0-9a-fA-F:\s]+)/i);
+            if (!/^[0-9a-f]{40}$/.test(apkSha1Hex) || !/^[0-9a-f]{64}$/.test(apkSha256Hex)) {
+              throw new Error(`Failed to extract valid SHA-1/SHA-256 from apksigner output:\n${certs}`);
+            }
+            const fmtColon = (h) => h.toUpperCase().match(/.{1,2}/g).join(":");
+            const apkSha1Colon = fmtColon(apkSha1Hex);
+            const apkSha256Colon = fmtColon(apkSha256Hex);
+
+            const assetsCfg = JSON.parse(fs.readFileSync(path.join(verifyDir, "assets-cfg.json"), "utf8") || "{}");
+            assert.equal(assetsCfg.projectId, "gen-lang-client-0539248410", `APK assets projectId "${assetsCfg.projectId}" != "gen-lang-client-0539248410"`);
+            assert.equal(String(assetsCfg.messagingSenderId || ""), "359305394572", `APK assets messagingSenderId "${assetsCfg.messagingSenderId}" != "359305394572"`);
+            assert.equal(assetsCfg.appId, "1:359305394572:web:33464b0e35228f76cabea9", `APK assets appId "${assetsCfg.appId}" mismatch`);
+            assert.equal(assetsCfg.firestoreDatabaseId, "ai-studio-remixremixremixr-8acde1bb-0f68-49e5-8b92-365bf5c2e31f", `APK assets firestoreDatabaseId "${assetsCfg.firestoreDatabaseId}" mismatch`);
+
+            console.log("=== ACTUAL APK CERTIFICATE VERIFICATION ===");
+            console.log(`APK package name: ${pkg}`);
+            console.log(`Signing certificate type: ${process.env.ANDROID_SIGNING_TYPE || "unknown"}`);
+            console.log(`Certificate alias: ${process.env.ANDROID_SIGNING_ALIAS || "unknown"}`);
+            console.log(`SHA-1:   ${apkSha1Colon}`);
+            console.log(`SHA-256: ${apkSha256Colon}`);
+
+            if (process.env.GITHUB_OUTPUT) {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `apk_sha1=${apkSha1Colon}\napk_sha256=${apkSha256Colon}\nsigning_type=${process.env.ANDROID_SIGNING_TYPE || "unknown"}\n`);
+            }
+          '
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS-ROYALE-ANDROID-APK
+          path: ${{ steps.detect_apk.outputs.apk_path }}
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+    outputs:
+      exe_path: ${{ steps.detect_exe.outputs.exe_path }}
+      exe_name: ${{ steps.detect_exe.outputs.exe_name }}
+      version_name: ${{ steps.version.outputs.version_name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          if (Test-Path package-lock.json) {
+            Write-Host "Installing dependencies from package-lock.json via npm ci..."
+            npm ci --legacy-peer-deps
+          } elseif (Test-Path npm-shrinkwrap.json) {
+            Write-Host "Installing dependencies from npm-shrinkwrap.json via npm ci..."
+            npm ci --legacy-peer-deps
+          } else {
+            if (Test-Path bun.lock) {
+              Write-Host "::notice::bun.lock detected without package-lock.json; installing via npm --legacy-peer-deps so Electron binaries and postinstall hooks install properly."
+            }
+            npm install --legacy-peer-deps --no-audit --no-fund
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Validate active backend URL & Firebase config
+        shell: pwsh
+        env:
+          RESOLVED_BACKEND_URL: ${{ vars.VITE_BACKEND_URL || secrets.VITE_BACKEND_URL || 'https://ais-pre-o45j3avytqf2cxv34uusrr-658856767272.europe-west3.run.app' }}
+        run: |
+          if ($env:RESOLVED_BACKEND_URL -notmatch '^https://[^/]+' -or $env:RESOLVED_BACKEND_URL -match 'localhost|127\.0\.0\.1|ais-pre-6tyidv2pt6sibhftxu2mbu-884864254163\.europe-west2\.run\.app|ais-pre-kgjgpnjbzvdsadro4u6lnw-688318389065\.europe-west3\.run\.app') {
+            Write-Error "Invalid or retired VITE_BACKEND_URL ('$($env:RESOLVED_BACKEND_URL)'). Provide an active public HTTPS backend URL."
+            exit 1
+          }
+          foreach ($file in @('android/app/src/main/assets/firebase-client-config.json', 'firebase-applet-config.json')) {
+            if (-not (Test-Path $file)) {
+              Write-Error "Missing $file."
+              exit 1
+            }
+            $cfg = Get-Content $file -Raw | ConvertFrom-Json
+            if ($cfg.projectId -ne 'gen-lang-client-0539248410') {
+              Write-Error "Unexpected projectId '$($cfg.projectId)' in $file; expected 'gen-lang-client-0539248410'."
+              exit 1
+            }
+            if ([string]$cfg.messagingSenderId -ne '359305394572') {
+              Write-Error "Unexpected messagingSenderId '$($cfg.messagingSenderId)' in $file; expected '359305394572'."
+              exit 1
+            }
+            if ($cfg.appId -ne '1:359305394572:web:33464b0e35228f76cabea9') {
+              Write-Error "Unexpected appId '$($cfg.appId)' in $file."
+              exit 1
+            }
+            if ($cfg.firestoreDatabaseId -ne 'ai-studio-remixremixremixr-8acde1bb-0f68-49e5-8b92-365bf5c2e31f') {
+              Write-Error "Unexpected firestoreDatabaseId '$($cfg.firestoreDatabaseId)' in $file."
+              exit 1
+            }
+          }
+          Write-Host "Verified Firebase config (gen-lang-client-0539248410 / ai-studio-remixremixremixr-8acde1bb-0f68-49e5-8b92-365bf5c2e31f) and backend URL."
+
+      - name: Resolve Windows installer version
+        id: version
+        shell: pwsh
+        env:
+          INPUT_VERSION_NAME: ${{ inputs.version_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_STRING: ${{ github.ref }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          if ($env:REF_STRING -like "refs/tags/v*") {
+            $ver = $env:REF_NAME.TrimStart('v')
+          } elseif (-not [string]::IsNullOrWhiteSpace($env:INPUT_VERSION_NAME)) {
+            $ver = $env:INPUT_VERSION_NAME.Trim()
+          } else {
+            $ver = "1.0.$($env:RUN_NUMBER)"
+          }
+          "RELEASE_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "version_name=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Using Windows installer version: $ver"
+
+      - name: Build production web bundle
+        shell: pwsh
+        env:
+          VITE_BACKEND_URL: ${{ vars.VITE_BACKEND_URL || secrets.VITE_BACKEND_URL || 'https://ais-pre-o45j3avytqf2cxv34uusrr-658856767272.europe-west3.run.app' }}
+        run: |
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path 'dist/index.html')) {
+            Write-Error "Expected dist/index.html after Vite build."
+            exit 1
+          }
+
+      - name: Ensure Windows desktop icon assets
+        shell: pwsh
+        run: |
+          node scripts/ensure-desktop-icon.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path 'build/icon.ico')) {
+            Write-Error "Failed to generate build/icon.ico required by electron-builder.yml."
+            exit 1
+          }
+
+      - name: Build Windows NSIS EXE installer
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          $hasCscLink = -not [string]::IsNullOrWhiteSpace($env:CSC_LINK)
+          $hasCscPass = -not [string]::IsNullOrWhiteSpace($env:CSC_KEY_PASSWORD)
+          if ($hasCscLink -xor $hasCscPass) {
+            Write-Error "Incomplete Windows code-signing secrets: provide both WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD, or leave both unset for unsigned NSIS builds."
+            exit 1
+          }
+          npx electron-builder --win nsis --x64 --publish never "-c.extraMetadata.version=$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Detect generated Windows EXE output path
+        id: detect_exe
+        shell: pwsh
+        run: |
+          $outDir = "dist-electron"
+          if (Test-Path "electron-builder.yml") {
+            $match = Select-String -Path "electron-builder.yml" -Pattern '^\s*output:\s*(.+)$' | Select-Object -First 1
+            if ($match) {
+              $outDir = $match.Matches[0].Groups[1].Value.Trim().Trim('"', "'")
+            }
+          }
+          if (-not (Test-Path $outDir)) {
+            Write-Error "Electron Builder output directory '$outDir' does not exist."
+            exit 1
+          }
+          $exeFiles = @(Get-ChildItem -Path $outDir -File -Filter "*.exe" | Sort-Object Name)
+          if ($exeFiles.Count -eq 0) {
+            Write-Error "No Windows installer .exe found inside '$outDir'."
+            exit 1
+          }
+          $selected = $exeFiles[0]
+          $relPath = "$outDir/$($selected.Name)"
+          Write-Host "Detected Windows EXE installer: $relPath ($($selected.Length) bytes)"
+          "exe_path=$relPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "exe_name=$($selected.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload Windows EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS-ROYALE-WINDOWS-EXE
+          path: ${{ steps.detect_exe.outputs.exe_path }}
+          if-no-files-found: error
+
+  build-summary:
+    name: Build Summary
+    needs: [build-android, build-windows]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Publish workflow summary
+        env:
+          ANDROID_RESULT: ${{ needs.build-android.result }}
+          ANDROID_APK_NAME: ${{ needs.build-android.outputs.apk_name }}
+          ANDROID_APK_PATH: ${{ needs.build-android.outputs.apk_path }}
+          ANDROID_APK_SHA1: ${{ needs.build-android.outputs.apk_sha1 }}
+          ANDROID_APK_SHA256: ${{ needs.build-android.outputs.apk_sha256 }}
+          ANDROID_SIGNING_TYPE: ${{ needs.build-android.outputs.signing_type }}
+          WINDOWS_RESULT: ${{ needs.build-windows.result }}
+          WINDOWS_EXE_NAME: ${{ needs.build-windows.outputs.exe_name }}
+          WINDOWS_EXE_PATH: ${{ needs.build-windows.outputs.exe_path }}
+        run: |
+          {
+            echo "## NEXUS ROYALE Build Summary"
+            echo ""
+            echo "| Target | Status | Artifact Name | Output File |"
+            echo "| --- | --- | --- | --- |"
+            echo "| Android APK | \`${ANDROID_RESULT}\` | \`NEXUS-ROYALE-ANDROID-APK\` | \`${ANDROID_APK_NAME:-Not produced}\` |"
+            echo "| Windows EXE | \`${WINDOWS_RESULT}\` | \`NEXUS-ROYALE-WINDOWS-EXE\` | \`${WINDOWS_EXE_NAME:-Not produced}\` |"
+            echo ""
+            if [ "$ANDROID_RESULT" = "success" ]; then
+              echo "- Android APK detected at: \`${ANDROID_APK_PATH}\`"
+              echo "- Android signing type: \`${ANDROID_SIGNING_TYPE}\`"
+              echo "- Android APK SHA-1: \`${ANDROID_APK_SHA1}\`"
+              echo "- Android APK SHA-256: \`${ANDROID_APK_SHA256}\`"
+            else
+              echo "- **Android build did not succeed (\`${ANDROID_RESULT}\`)**: review the \`Build Android APK\` job logs."
+            fi
+            if [ "$WINDOWS_RESULT" = "success" ]; then
+              echo "- Windows EXE detected at: \`${WINDOWS_EXE_PATH}\`"
+            else
+              echo "- **Windows build did not succeed (\`${WINDOWS_RESULT}\`)**: verify \`VITE_BACKEND_URL\` and review the \`Build Windows EXE\` job logs."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          cat "$GITHUB_STEP_SUMMARY"

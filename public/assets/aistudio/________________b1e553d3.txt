@@ -1,0 +1,41 @@
+**MAP SELECTION SYSTEM + 50 AI BOTS**
+
+### 1. MAP SELECTION SCREEN
+When the player presses the START button in the lobby, open a dedicated map selection screen.
+
+- Display all three existing game maps.
+- Show a large visual image/thumbnail for each map instead of text-only buttons.
+- Each map card must include its map image, map name, and a selection button.
+- Allow the player to select any of the three maps.
+- Highlight the currently selected map with a clear visual border.
+- Make the interface modern, attractive, and similar to professional Battle Royale games.
+- Use actual screenshots or preview images of the existing maps, not unrelated placeholder images.
+
+### 2. AUTOMATIC RETURN TO LOBBY
+After the player selects a map:
+
+- Save the selected map.
+- Automatically return the player to the main lobby.
+- Display the selected map's image and name in the lobby.
+- Keep the selected map saved until the player changes it.
+- The player must press START again to begin the match.
+- Do not start the match immediately after selecting the map.
+
+### 3. MATCH START SYSTEM
+When the player presses START again:
+
+- Load the previously selected map.
+- Start a new Battle Royale match.
+- Spawn the player inside the airplane.
+- Add exactly 50 AI-controlled bots to the match, in addition to the human player.
+- Make all 50 bots use the same map, airplane, parachute, landing, looting, and combat systems.
+- Ensure bots can move, collect weapons, enter buildings, fight, and eliminate each other.
+- The match must end when only one participant remains alive.
+
+### 4. IMPORTANT REQUIREMENTS
+- Apply the system to all three existing maps.
+- Do not remove or replace existing maps.
+- Ensure map preview images match their actual playable environments.
+- Optimize the 50 bots to avoid lag and FPS drops.
+- Preserve all existing weapons, characters, controls, and gameplay systems.
+- Make sure the map selection and lobby transitions work correctly on Android and PC.

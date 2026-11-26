@@ -1,0 +1,338 @@
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Optional semantic version for APK (e.g. 1.0.0)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-android-apk:
+    name: Build Android Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android SDK (API 36)
+        run: |
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK_DIR" ]; then
+            echo "Android SDK directory not found at $SDK_DIR" >&2
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+
+          if [ -x "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
+          else
+            SDKMANAGER=$(find "$SDK_DIR/cmdline-tools" -name sdkmanager -type f 2>/dev/null | sort -V | tail -n 1)
+          fi
+
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "sdkmanager not found under $SDK_DIR/cmdline-tools" >&2
+            exit 1
+          fi
+
+          echo "Using sdkmanager: $SDKMANAGER"
+          yes 2>/dev/null | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          echo "$SDK_DIR/platform-tools" >> "$GITHUB_PATH"
+
+      - name: Install npm dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --legacy-peer-deps
+          else
+            npm install --legacy-peer-deps --no-audit --no-fund
+          fi
+
+      - name: Validate active backend URL & Firebase configuration
+        env:
+          RESOLVED_BACKEND_URL: ${{ vars.VITE_BACKEND_URL || secrets.VITE_BACKEND_URL || 'https://ais-pre-o45j3avytqf2cxv34uusrr-658856767272.europe-west3.run.app' }}
+        run: |
+          if ! printf '%s' "$RESOLVED_BACKEND_URL" | grep -Eq '^https://[^/]+' \
+            || printf '%s' "$RESOLVED_BACKEND_URL" | grep -Eq 'localhost|127\.0\.0\.1|ais-pre-6tyidv2pt6sibhftxu2mbu-884864254163\.europe-west2\.run\.app|ais-pre-kgjgpnjbzvdsadro4u6lnw-688318389065\.europe-west3\.run\.app'; then
+            echo "::error::Invalid or retired VITE_BACKEND_URL ('$RESOLVED_BACKEND_URL'). Provide an active public HTTPS backend URL." >&2
+            exit 1
+          fi
+          echo "Verified active backend URL: $RESOLVED_BACKEND_URL"
+
+          node -e '
+            const fs = require("node:fs");
+            const assert = require("node:assert/strict");
+            const expected = {
+              projectId: "gen-lang-client-0539248410",
+              messagingSenderId: "359305394572",
+              appId: "1:359305394572:web:33464b0e35228f76cabea9",
+              firestoreDatabaseId: "ai-studio-remixremixremixr-8acde1bb-0f68-49e5-8b92-365bf5c2e31f",
+            };
+            for (const file of ["android/app/src/main/assets/firebase-client-config.json", "firebase-applet-config.json"]) {
+              assert.ok(fs.existsSync(file), `Missing ${file}`);
+              const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+              assert.equal(cfg.projectId, expected.projectId, `${file} projectId mismatch`);
+              assert.equal(String(cfg.messagingSenderId || ""), expected.messagingSenderId, `${file} messagingSenderId mismatch`);
+              assert.equal(cfg.appId, expected.appId, `${file} appId mismatch`);
+              assert.equal(cfg.firestoreDatabaseId, expected.firestoreDatabaseId, `${file} firestoreDatabaseId mismatch`);
+            }
+            console.log(`Verified Firebase config (${expected.projectId} / ${expected.firestoreDatabaseId}).`);
+          '
+
+      - name: Build production web bundle
+        env:
+          VITE_BACKEND_URL: ${{ vars.VITE_BACKEND_URL || secrets.VITE_BACKEND_URL || 'https://ais-pre-o45j3avytqf2cxv34uusrr-658856767272.europe-west3.run.app' }}
+        run: npm run build
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
+      - name: Prepare Firebase client config & optional release signing
+        env:
+          INPUT_VERSION_NAME: ${{ inputs.version_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_STRING: ${{ github.ref }}
+          RUN_NUMBER: ${{ github.run_number }}
+          ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ ! -f android/app/src/main/assets/firebase-client-config.json ]; then
+            echo "::error::Missing android/app/src/main/assets/firebase-client-config.json." >&2
+            exit 1
+          fi
+
+          if [ -n "$ANDROID_GOOGLE_SERVICES_JSON" ]; then
+            node -e '
+              const fs = require("node:fs");
+              const stripBomAndWrappers = (value) => {
+                let s = (value || "").replace(/^\uFEFF/, "").trim();
+                if (s.startsWith("```")) {
+                  s = s.replace(/^```[a-zA-Z0-9_-]*\s*\r?\n?/, "").replace(/\r?\n?```\s*$/, "").trim();
+                }
+                if ((s.startsWith("\"") && s.endsWith("\"")) || (s.startsWith("\x27") && s.endsWith("\x27"))) {
+                  const inner = s.slice(1, -1).trim();
+                  if (inner.startsWith("{") || /^[A-Za-z0-9+/_=-]+$/.test(inner.replace(/\s+/g, ""))) {
+                    s = inner;
+                  }
+                }
+                return s.replace(/^\uFEFF/, "").trim();
+              };
+
+              const rawInput = stripBomAndWrappers(process.env.ANDROID_GOOGLE_SERVICES_JSON || "");
+              let jsonText = rawInput;
+              if (rawInput && !rawInput.startsWith("{")) {
+                const b64 = rawInput.replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/");
+                const buf = Buffer.from(b64, "base64");
+                jsonText = stripBomAndWrappers(
+                  buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe
+                    ? buf.subarray(2).toString("utf16le")
+                    : buf.toString("utf8")
+                );
+              }
+
+              if (!jsonText || !jsonText.startsWith("{")) {
+                throw new Error("ANDROID_GOOGLE_SERVICES_JSON must be valid google-services.json JSON or base64-encoded JSON.");
+              }
+
+              const gs = JSON.parse(jsonText);
+              const appCfg = JSON.parse(fs.readFileSync("android/app/src/main/assets/firebase-client-config.json", "utf8"));
+              const expectedProject = appCfg.projectId;
+              const expectedNumber = String(appCfg.messagingSenderId || "");
+              const expectedPkg = "com.nexusroyale.game";
+
+              if (gs?.project_info?.project_id !== expectedProject) {
+                throw new Error(`google-services.json project_id "${gs?.project_info?.project_id}" does not match firebase-applet-config.json projectId "${expectedProject}".`);
+              }
+              if (expectedNumber && String(gs?.project_info?.project_number || "") !== expectedNumber) {
+                throw new Error(`google-services.json project_number "${gs?.project_info?.project_number}" does not match messagingSenderId "${expectedNumber}".`);
+              }
+              const clients = Array.isArray(gs?.client) ? gs.client : [];
+              const match = clients.find((c) => c?.client_info?.android_client_info?.package_name === expectedPkg);
+              if (!match) {
+                throw new Error(`google-services.json does not contain Android package "${expectedPkg}".`);
+              }
+              fs.writeFileSync("android/app/google-services.json", JSON.stringify(gs, null, 2) + "\n", "utf8");
+              console.log(`Verified optional android/app/google-services.json for ${expectedProject} / ${expectedPkg}`);
+            '
+          else
+            echo "::notice::ANDROID_GOOGLE_SERVICES_JSON not set; NEXUS ROYAL ID uses Firebase Web SDK via assets/firebase-client-config.json."
+          fi
+
+          SIGN_VARS_COUNT=0
+          [ -n "$ANDROID_KEYSTORE_BASE64" ] && SIGN_VARS_COUNT=$((SIGN_VARS_COUNT + 1))
+          [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && SIGN_VARS_COUNT=$((SIGN_VARS_COUNT + 1))
+          [ -n "$ANDROID_KEY_ALIAS" ] && SIGN_VARS_COUNT=$((SIGN_VARS_COUNT + 1))
+          [ -n "$ANDROID_KEY_PASSWORD" ] && SIGN_VARS_COUNT=$((SIGN_VARS_COUNT + 1))
+
+          if [ "$SIGN_VARS_COUNT" -eq 4 ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "${{ runner.temp }}/nexus-release.keystore"
+            if [ ! -s "${{ runner.temp }}/nexus-release.keystore" ]; then
+              echo "::error::Decoded ANDROID_KEYSTORE_BASE64 keystore file is empty." >&2
+              exit 1
+            fi
+            echo "ANDROID_KEYSTORE_PATH=${{ runner.temp }}/nexus-release.keystore" >> "$GITHUB_ENV"
+            echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_SIGNING_TYPE=GitHub Actions release signing certificate" >> "$GITHUB_ENV"
+            echo "ANDROID_SIGNING_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "Signing certificate type: GitHub Actions release signing certificate"
+            echo "Certificate alias: $ANDROID_KEY_ALIAS"
+            keytool -list -v -keystore "${{ runner.temp }}/nexus-release.keystore" -alias "$ANDROID_KEY_ALIAS" -storepass:env ANDROID_KEYSTORE_PASSWORD \
+              | grep -E '^\s*(Alias name:|SHA1:|SHA256:)' || true
+          elif [ "$SIGN_VARS_COUNT" -gt 0 ]; then
+            echo "::error::Incomplete Android release signing secrets ($SIGN_VARS_COUNT/4 set). Configure all four secrets (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD) or leave all four unset for debug-signed testing APKs." >&2
+            exit 1
+          else
+            echo "ANDROID_SIGNING_TYPE=Debug signing certificate (GitHub Actions debug keystore)" >> "$GITHUB_ENV"
+            echo "ANDROID_SIGNING_ALIAS=androiddebugkey" >> "$GITHUB_ENV"
+            echo "::notice::ANDROID_KEYSTORE_* secrets not configured; Gradle will sign the release APK with Android's debug keystore."
+          fi
+
+          if [[ "$REF_STRING" == refs/tags/v* ]]; then
+            CLEAN_VER="${REF_NAME#v}"
+          elif [ -n "$INPUT_VERSION_NAME" ]; then
+            CLEAN_VER="$INPUT_VERSION_NAME"
+          else
+            CLEAN_VER="1.0.${RUN_NUMBER}"
+          fi
+          echo "ANDROID_VERSION_NAME=$CLEAN_VER" >> "$GITHUB_ENV"
+          echo "ANDROID_VERSION_CODE=$RUN_NUMBER" >> "$GITHUB_ENV"
+
+      - name: Build Android Release APK with Gradle
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Stage APK artifact
+        id: stage_apk
+        run: |
+          mkdir -p artifacts-out
+          APK_FILE=$(find android/app/build/outputs/apk/release -name "*.apk" ! -name "*-unsigned.apk" | sort | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            APK_FILE=$(find android/app/build/outputs/apk -name "*.apk" | sort | head -n 1)
+          fi
+          if [ -z "$APK_FILE" ]; then
+            echo "No APK found in android/app/build/outputs/apk" >&2
+            exit 1
+          fi
+          STAGED_APK="artifacts-out/NEXUS-ROYALE-${ANDROID_VERSION_NAME}.apk"
+          cp "$APK_FILE" "$STAGED_APK"
+          ls -lh artifacts-out/
+          echo "apk_path=$STAGED_APK" >> "$GITHUB_OUTPUT"
+
+      - name: Verify APK signing certificate, package & Firebase client config
+        env:
+          APK_PATH: ${{ steps.stage_apk.outputs.apk_path }}
+        run: |
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APKSIGNER=$(find "$SDK_DIR/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -n 1)
+          AAPT2=$(find "$SDK_DIR/build-tools" -name aapt2 -type f 2>/dev/null | sort -V | tail -n 1)
+
+          if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
+            echo "::error::apksigner not found under $SDK_DIR/build-tools." >&2
+            exit 1
+          fi
+          if [ -z "$AAPT2" ] || [ ! -x "$AAPT2" ]; then
+            echo "::error::aapt2 not found under $SDK_DIR/build-tools." >&2
+            exit 1
+          fi
+
+          VERIFY_DIR="${{ runner.temp }}/apk-verify"
+          rm -rf "$VERIFY_DIR"
+          mkdir -p "$VERIFY_DIR"
+          trap 'rm -rf "$VERIFY_DIR"' EXIT
+
+          "$AAPT2" dump badging "$APK_PATH" > "$VERIFY_DIR/badging.txt"
+          "$APKSIGNER" verify --print-certs "$APK_PATH" > "$VERIFY_DIR/certs.txt"
+          unzip -p "$APK_PATH" assets/firebase-client-config.json > "$VERIFY_DIR/assets-cfg.json"
+
+          export VERIFY_DIR
+          node -e '
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const assert = require("node:assert/strict");
+
+            const verifyDir = process.env.VERIFY_DIR;
+            const badging = fs.readFileSync(path.join(verifyDir, "badging.txt"), "utf8");
+            const pkgMatch = badging.match(/^package:\s*name=\x27([^\x27]+)\x27/m) || badging.match(/package:\s*name="([^"]+)"/);
+            const pkg = (pkgMatch ? pkgMatch[1] : "").trim();
+            assert.equal(pkg, "com.nexusroyale.game", `APK package name "${pkg}" != "com.nexusroyale.game"`);
+
+            const certs = fs.readFileSync(path.join(verifyDir, "certs.txt"), "utf8");
+            const normalizeHex = (raw) => String(raw || "").replace(/[:\s]+/g, "").toLowerCase();
+            const extractDigest = (labelRegex) => {
+              for (const line of certs.split(/\r?\n/)) {
+                if (/source\s+stamp/i.test(line)) continue;
+                const m = line.match(labelRegex);
+                if (m) return normalizeHex(m[1]);
+              }
+              return "";
+            };
+            const apkSha1Hex = extractDigest(/certificate\s+SHA-?1\s+digest\s*:\s*([0-9a-fA-F:\s]+)/i);
+            const apkSha256Hex = extractDigest(/certificate\s+SHA-?256\s+digest\s*:\s*([0-9a-fA-F:\s]+)/i);
+            if (!/^[0-9a-f]{40}$/.test(apkSha1Hex) || !/^[0-9a-f]{64}$/.test(apkSha256Hex)) {
+              throw new Error(`Failed to extract valid SHA-1/SHA-256 from apksigner output:\n${certs}`);
+            }
+            const fmtColon = (h) => h.toUpperCase().match(/.{1,2}/g).join(":");
+            const apkSha1Colon = fmtColon(apkSha1Hex);
+            const apkSha256Colon = fmtColon(apkSha256Hex);
+
+            const assetsCfg = JSON.parse(fs.readFileSync(path.join(verifyDir, "assets-cfg.json"), "utf8") || "{}");
+            assert.equal(assetsCfg.projectId, "gen-lang-client-0539248410");
+            assert.equal(String(assetsCfg.messagingSenderId || ""), "359305394572");
+            assert.equal(assetsCfg.appId, "1:359305394572:web:33464b0e35228f76cabea9");
+            assert.equal(assetsCfg.firestoreDatabaseId, "ai-studio-remixremixremixr-8acde1bb-0f68-49e5-8b92-365bf5c2e31f");
+
+            console.log("=== ACTUAL APK CERTIFICATE & FIREBASE VERIFICATION ===");
+            console.log(`APK package name: ${pkg}`);
+            console.log(`Signing certificate type: ${process.env.ANDROID_SIGNING_TYPE || "unknown"}`);
+            console.log(`Certificate alias: ${process.env.ANDROID_SIGNING_ALIAS || "unknown"}`);
+            console.log(`SHA-1:   ${apkSha1Colon}`);
+            console.log(`SHA-256: ${apkSha256Colon}`);
+            console.log(`Firebase projectId (NEXUS ROYAL ID): ${assetsCfg.projectId}`);
+          '
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-royale-android-apk
+          path: artifacts-out/*.apk
+          if-no-files-found: error
+
+      - name: Publish Android APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts-out/*.apk
+          generate_release_notes: true

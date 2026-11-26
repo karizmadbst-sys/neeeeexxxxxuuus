@@ -1,0 +1,54 @@
+**WEAPON SYSTEM, RELOADING, INVENTORY AND ZONE FIXES**
+
+### 1. SCOPE SYSTEM
+Only the following weapons should have a scope/zoom aiming feature:
+- SCAR
+- AK
+- PARAFAL
+- AWM
+
+All other weapons must use normal aiming without a scope or zoom.
+
+Make sure the scope button only works when one of these four weapons is equipped.
+
+### 2. REALISTIC AND FASTER RELOADING
+Improve the weapon reloading system:
+- Make reloading slightly faster than the current system.
+- Add realistic weapon-specific reload animations.
+- Make the character correctly remove the magazine, insert a new one, and prepare the weapon.
+- Synchronize ammunition count with the reload animation.
+- Prevent shooting while reloading.
+- Allow reloading to be interrupted when switching weapons.
+- Give each weapon its own realistic reload duration and animation.
+
+### 3. TWO-WEAPON INVENTORY SYSTEM
+The character can carry ONLY TWO WEAPONS at a time.
+
+- Add two weapon slots.
+- Allow the player to equip two different weapons.
+- Add a weapon switching button on mobile.
+- Allow PC players to switch between weapons using keys 1 and 2.
+- Make switching between the two weapons instant or very fast, with smooth animations.
+- When switching weapons, place the previous weapon visibly on the character's back.
+- Allow the player to drop or replace a weapon to collect another one.
+- Never allow the player to carry more than two weapons.
+
+### 4. FIX THE SAFE ZONE SYSTEM
+Fix the problem where the Safe Zone does not appear or disappear correctly during combat.
+
+- Make the Safe Zone visible at all times when a match is active.
+- Display the Safe Zone boundary clearly on the map and minimap.
+- Show the shrinking zone timer.
+- Display a warning before the zone starts shrinking.
+- Make the zone damage players who stay outside it.
+- Update the zone position and size correctly throughout the match.
+- Ensure the zone remains visible even when the player is shooting, aiming, fighting, or switching weapons.
+- Never hide the zone because of character animations or combat actions.
+
+### 5. FINAL REQUIREMENTS
+- Preserve all existing weapons, maps, characters, and controls.
+- Ensure all systems work in Battle Royale and Battle Royale Ranked.
+- Optimize performance for Android and PC.
+- Fix bugs without breaking existing gameplay features.
+
+IMPORTANT: Test every weapon individually and verify that only SCAR, AK, PARAFAL, and AWM have scope functionality.
