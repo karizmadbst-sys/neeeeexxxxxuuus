@@ -137,6 +137,21 @@ export const RANKED_PG_SCHEMA_STATEMENTS: readonly string[] = [
     deleted_at BIGINT,
     PRIMARY KEY (player_id, mail_id)
   );`,
+
+  `CREATE TABLE IF NOT EXISTS glb_assets (
+    asset_id TEXT PRIMARY KEY,
+    sha256 TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'draft',
+    metadata JSONB NOT NULL,
+    glb_bytes BYTEA NOT NULL,
+    preview_bytes BYTEA,
+    preview_ext TEXT,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+  );`,
+
+  `CREATE INDEX IF NOT EXISTS idx_glb_assets_status
+    ON glb_assets (status, created_at DESC);`,
 ];
 
 export const CORE_SCHEMA_MIGRATION_ID = '001_ranked_core_schema';

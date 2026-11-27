@@ -47,7 +47,9 @@ import { Player } from '../player/Player';
 import { PlayerCamera } from '../player/PlayerCamera';
 import { PlayerController } from '../player/PlayerController';
 import { PlayerProfileManager } from '../progression/PlayerProfileManager';
-import type { ShopCatalogItem } from '../shop/IShopSystem';
+import { glbAssetToShopCatalogItem } from '../shop/GlbAssetTypes';
+import { glbStoreClient } from '../shop/GlbStoreClient';
+import type { ShopActionResult, ShopCatalogItem } from '../shop/IShopSystem';
 import { ShopManager } from '../shop/ShopManager';
 import type { ScopeOverlayState } from '../ui/ScopeOverlay';
 import { UIManager } from '../ui/UIManager';
@@ -67,7 +69,11 @@ import {
 import { FirebaseAuthService } from '../firebase/FirebaseAuthService';
 import { FirebaseFriendsService } from '../firebase/FirebaseFriendsService';
 import { FirebasePartyService } from '../firebase/FirebasePartyService';
-import { cloudPublicToRankedProfile, FirebasePlayerService } from '../firebase/FirebasePlayerService';
+import {
+  cloudPublicToRankedProfile,
+  FirebasePlayerService,
+  verifyDeveloperAuthorizationStatus,
+} from '../firebase/FirebasePlayerService';
 import { fetchApiJson, isBackendReachabilityError } from '../network/ApiResponse';
 import { RankedApiClient } from '../ranked/RankedApiClient';
 import { RankedNetworkClient } from '../ranked/RankedNetworkClient';
@@ -190,6 +196,8 @@ export class Game implements Subsystem {
   private preparingAuthPromise: Promise<void> | null = null;
   private preparingAuthUid: string | null = null;
   private authScreenEnteringLobby = false;
+  private developerCheckConfirmedFalse = false;
+  private developerCheckPromise: Promise<boolean> | null = null;
   private firebasePublicSyncTimer = 0;
   private readonly handleWindowBeforeUnload = (): void => {
     if (this.firebaseActiveUid) {
@@ -1071,7 +1079,51 @@ export class Game implements Subsystem {
             this.player.setCustomization(this.r6Customization);
           }
         },
-        onPurchaseShopItem: (item) => {
+        onPurchaseShopItem: async (item): Promise<ShopActionResult> => {
+          const idToken = await this.firebaseAuthService.getIdToken(false).catch(() => null);
+          const creds = this.rankedApi.getCredentials();
+          if (item.glbAsset || idToken || creds) {
+            try {
+              const outcome = await glbStoreClient.purchaseItem(item.id);
+              if (outcome.ok) {
+                const result = this.shopManager.applyAuthoritativePurchase(
+                  item.id,
+                  outcome.credits,
+                  outcome.vault?.ownedIds,
+                );
+                this.audioManager.playDeploy();
+                this.uiManager.updateShopSnapshot(this.shopManager.getSnapshot());
+                this.syncVaultStateToServer();
+                return result;
+              }
+              this.audioManager.playClick();
+              return {
+                ok: false,
+                message: outcome.error || i18n.t('shop.msg.unavailable'),
+                item,
+              };
+            } catch (err) {
+              if (!item.glbAsset && isBackendReachabilityError(err)) {
+                const fallbackResult = this.shopManager.purchase(item.id);
+                if (fallbackResult.ok) {
+                  this.audioManager.playDeploy();
+                  this.uiManager.updateShopSnapshot(this.shopManager.getSnapshot());
+                  this.syncVaultStateToServer();
+                } else {
+                  this.audioManager.playClick();
+                }
+                return fallbackResult;
+              }
+              this.audioManager.playClick();
+              return {
+                ok: false,
+                message:
+                  err instanceof Error ? err.message : i18n.t('shop.msg.unavailable'),
+                item,
+              };
+            }
+          }
+
           const result = this.shopManager.purchase(item.id);
           if (result.ok) {
             this.audioManager.playDeploy();
@@ -1082,6 +1134,7 @@ export class Game implements Subsystem {
           }
           return result;
         },
+        onRefreshGlbCatalog: () => this.refreshGlbStoreCatalog(),
         onEquipShopItem: (item) => {
           this.shopManager.setCurrentCustomization(this.r6Customization);
           const result = this.shopManager.equip(item.id);
@@ -2068,6 +2121,12 @@ export class Game implements Subsystem {
       }),
     );
 
+    glbStoreClient.setAuthProvider({
+      getIdToken: (forceRefresh = false) => this.firebaseAuthService.getIdToken(forceRefresh),
+      getPlayerCredentials: () => this.rankedApi.getCredentials(),
+    });
+    void this.refreshGlbStoreCatalog();
+
     this.uiManager.setAuthState(this.firebaseAuthService.getState());
     this.unsubscribes.push(
       this.firebaseAuthService.onChange((authState, rawUser) => {
@@ -2082,6 +2141,8 @@ export class Game implements Subsystem {
             this.loginLoadingActive = false;
             this.authScreenEnteringLobby = false;
             this.hasCompletedPreLobbyLogin = false;
+            this.developerCheckConfirmedFalse = false;
+            this.developerCheckPromise = null;
             this.firebaseActiveUid = null;
             this.cloudStateHydratedUid = null;
             if (this.cloudStateSyncTimer) {
@@ -2103,7 +2164,10 @@ export class Game implements Subsystem {
             resetR6CustomizationStorage();
             this.r6Customization = loadR6Customization();
             this.shopManager.setDeveloperMode(false);
+            this.uiManager.setDeveloperAccess(false);
             this.shopManager.resetToGuestDefaultVault();
+            glbStoreClient.clearPreviewCache();
+            void this.refreshGlbStoreCatalog();
             this.playerProfileManager.setDeveloperVerified(false);
             const guestSnap = this.playerProfileManager.resetToGuestAccount();
             this.syncSelectedCharacterAppearance();
@@ -2175,6 +2239,131 @@ export class Game implements Subsystem {
     }
   }
 
+  private async refreshGlbStoreCatalog(): Promise<void> {
+    const assets = await glbStoreClient.fetchStoreCatalog();
+    const shopItems = assets.map((asset) =>
+      glbAssetToShopCatalogItem(asset, (path) => getApiUrl(path)),
+    );
+    this.shopManager.setDynamicGlbItems(shopItems);
+    this.uiManager.updateShopCatalog(this.shopManager.getCatalog());
+    this.applyEquippedGlbLoadoutToPlayer();
+  }
+
+  private applyVerifiedDeveloperState(
+    isVerifiedDeveloper: boolean,
+    syncedProfile?: RankedProfile | null,
+  ): void {
+    this.characterManager.unlockSystem.setDeveloperAccess(isVerifiedDeveloper);
+    this.shopManager.setDeveloperMode(isVerifiedDeveloper);
+    this.uiManager.setDeveloperAccess(isVerifiedDeveloper);
+    this.playerProfileManager.setDeveloperVerified(isVerifiedDeveloper);
+
+    if (isVerifiedDeveloper && syncedProfile) {
+      if (this.preparedAuthSession && this.preparedAuthSession.uid === this.firebaseActiveUid) {
+        this.preparedAuthSession = {
+          ...this.preparedAuthSession,
+          profile: syncedProfile,
+          vault: syncedProfile.vault ?? this.preparedAuthSession.vault,
+          isDeveloper: true,
+        };
+      }
+      const accountSnap = this.playerProfileManager.applyCloudProfile(syncedProfile);
+      if (syncedProfile.vault) {
+        this.shopManager.applyCloudVaultState(syncedProfile.vault);
+      }
+      this.uiManager.rankedScreen.setProfile(syncedProfile);
+      this.uiManager.updatePlayerProfile(accountSnap, this.r6Customization);
+      this.syncSettingsAccountInfo();
+      this.uiManager.updateShopSnapshot(this.shopManager.getSnapshot());
+    }
+
+    if (isVerifiedDeveloper) {
+      void this.refreshGlbStoreCatalog();
+    }
+  }
+
+  private async reconcileDeveloperAccessFromBackend(
+    forceRefreshToken = false,
+  ): Promise<boolean> {
+    const user = this.firebaseAuthService.getCurrentUser();
+    const activeUid = this.firebaseActiveUid;
+    if (!user || !user.emailVerified || !activeUid || user.uid !== activeUid) {
+      return false;
+    }
+    if (this.playerProfileManager.getSnapshot().isDeveloper) {
+      this.uiManager.setDeveloperAccess(true);
+      return true;
+    }
+    if (this.developerCheckPromise) {
+      return this.developerCheckPromise;
+    }
+
+    const run = async (): Promise<boolean> => {
+      try {
+        const token = await this.firebaseAuthService.getIdToken(forceRefreshToken);
+        if (
+          this.isDisposed ||
+          !token ||
+          this.firebaseActiveUid !== activeUid ||
+          this.firebaseAuthService.getCurrentUser()?.uid !== activeUid
+        ) {
+          return false;
+        }
+        this.latestFirebaseIdToken = token;
+        this.rankedApi.setFirebaseIdToken(token);
+
+        const outcome = await verifyDeveloperAuthorizationStatus(token);
+        if (
+          this.isDisposed ||
+          this.firebaseActiveUid !== activeUid ||
+          this.firebaseAuthService.getCurrentUser()?.uid !== activeUid
+        ) {
+          return false;
+        }
+
+        if (outcome.verifiedDeveloper) {
+          this.developerCheckConfirmedFalse = false;
+          this.applyVerifiedDeveloperState(true, outcome.profile ?? null);
+          return true;
+        }
+
+        if (outcome.reachable) {
+          this.developerCheckConfirmedFalse = true;
+          this.applyVerifiedDeveloperState(false);
+        }
+        return false;
+      } catch {
+        return false;
+      } finally {
+        this.developerCheckPromise = null;
+      }
+    };
+
+    this.developerCheckPromise = run();
+    return this.developerCheckPromise;
+  }
+
+  private applyEquippedGlbLoadoutToPlayer(): void {
+    const loadout = this.shopManager.getEquippedGlbLoadout();
+    const toSpec = (item: ShopCatalogItem | null) =>
+      item?.glbAsset
+        ? {
+            id: item.id,
+            modelUrl: item.glbAsset.modelUrl,
+            scaleMultiplier: item.glbAsset.scaleMultiplier,
+            equipSlot: item.glbAsset.equipSlot,
+          }
+        : null;
+    this.player.setGlbLoadout({
+      character: toSpec(loadout.character),
+      outfit: toSpec(loadout.outfit),
+      backpack: toSpec(loadout.backpack),
+      helmet: toSpec(loadout.helmet),
+      armor: toSpec(loadout.armor),
+      accessory: toSpec(loadout.accessory),
+    });
+  }
+
   private applyShopEquipmentSideEffects(item?: ShopCatalogItem): void {
     const isCosmeticClothingOrOutfit =
       item?.customizationPatch !== undefined ||
@@ -2199,6 +2388,7 @@ export class Game implements Subsystem {
       );
     }
 
+    this.applyEquippedGlbLoadoutToPlayer();
     const gliderColors = this.shopManager.getActiveGliderColors();
     this.airplaneDropManager.setParachuteColors(
       gliderColors.primaryHex,
@@ -2602,6 +2792,7 @@ export class Game implements Subsystem {
     this.localRankedPlayerId = null;
     this.characterManager.unlockSystem.setDeveloperAccess(false);
     this.shopManager.setDeveloperMode(false);
+    this.uiManager.setDeveloperAccess(false);
     this.playerProfileManager.setDeveloperVerified(false);
     this.uiManager.showScreen('auth');
   }
@@ -2709,15 +2900,38 @@ export class Game implements Subsystem {
         throw new Error(i18n.t('loginLoad.errDataLoad'));
       }
 
-      const isVerifiedDeveloper = Boolean(
+      let activeProfile = result.profile;
+      let activeVault = result.vault;
+      let isVerifiedDeveloper = Boolean(
         result.isDeveloper && result.profile.isDeveloper,
       );
 
+      if (!isVerifiedDeveloper) {
+        const devOutcome = await verifyDeveloperAuthorizationStatus(freshToken);
+        if (!isAttemptStillActive()) return;
+        if (devOutcome.verifiedDeveloper) {
+          isVerifiedDeveloper = true;
+          this.developerCheckConfirmedFalse = false;
+          if (devOutcome.profile && devOutcome.profile.isDeveloper === true) {
+            activeProfile = devOutcome.profile;
+            if (devOutcome.profile.vault) {
+              activeVault = devOutcome.profile.vault;
+            }
+          } else {
+            activeProfile = { ...activeProfile, isDeveloper: true };
+          }
+        } else if (devOutcome.reachable) {
+          this.developerCheckConfirmedFalse = true;
+        }
+      } else {
+        this.developerCheckConfirmedFalse = false;
+      }
+
       this.preparedAuthSession = {
         uid,
-        profile: result.profile,
+        profile: activeProfile,
         secretToken: result.secretToken,
-        vault: result.vault,
+        vault: activeVault,
         isDeveloper: isVerifiedDeveloper,
       };
       this.uiManager.setAuthScreenState({
@@ -2725,25 +2939,26 @@ export class Game implements Subsystem {
         errorMessage: null,
         preparedAccount: {
           uid,
-          username: result.profile.name,
-          playerId: result.profile.playerId,
-          numericId: result.profile.numericId || result.profile.playerId,
+          username: activeProfile.name,
+          playerId: activeProfile.playerId,
+          numericId: activeProfile.numericId || activeProfile.playerId,
         },
       });
 
       this.firebaseActiveUid = uid;
-      this.localRankedPlayerId = result.profile.playerId;
+      this.localRankedPlayerId = activeProfile.playerId;
 
       this.rankedApi.setAuthenticatedSession(
         {
-          playerId: result.profile.playerId,
+          playerId: activeProfile.playerId,
           secretToken: result.secretToken,
         },
-        result.profile,
+        activeProfile,
       );
 
       this.characterManager.unlockSystem.setDeveloperAccess(isVerifiedDeveloper);
       this.shopManager.setDeveloperMode(isVerifiedDeveloper);
+      this.uiManager.setDeveloperAccess(isVerifiedDeveloper);
       this.playerProfileManager.setDeveloperVerified(isVerifiedDeveloper);
 
       if (this.cloudStateHydratedUid !== uid) {
@@ -2751,10 +2966,11 @@ export class Game implements Subsystem {
         this.cloudStateHydratedUid = uid;
       }
 
-      const accountSnap = this.playerProfileManager.applyCloudProfile(result.profile);
-      this.shopManager.applyCloudVaultState(result.vault);
+      const accountSnap = this.playerProfileManager.applyCloudProfile(activeProfile);
+      this.shopManager.applyCloudVaultState(activeVault);
+      void this.refreshGlbStoreCatalog();
       this.syncSelectedCharacterAppearance();
-      this.uiManager.rankedScreen.setProfile(result.profile);
+      this.uiManager.rankedScreen.setProfile(activeProfile);
       this.uiManager.updatePlayerProfile(accountSnap, this.r6Customization);
       this.syncSettingsAccountInfo();
       this.uiManager.updateShopSnapshot(this.shopManager.getSnapshot());
@@ -2767,8 +2983,8 @@ export class Game implements Subsystem {
         await this.firebaseFriendsService.startAndAwaitInitialSync(
           uid,
           {
-            playerId: result.profile.playerId,
-            numericId: result.profile.numericId || result.profile.playerId,
+            playerId: activeProfile.playerId,
+            numericId: activeProfile.numericId || activeProfile.playerId,
             platform: this.rankedApi.getPlatform(),
           },
           (friendsSnap) => {
@@ -2785,12 +3001,12 @@ export class Game implements Subsystem {
         uid,
         {
           uid,
-          playerId: result.profile.playerId,
-          numericId: result.profile.numericId || result.profile.playerId,
-          username: result.profile.name,
+          playerId: activeProfile.playerId,
+          numericId: activeProfile.numericId || activeProfile.playerId,
+          username: activeProfile.name,
           avatarId: resolvedAvatarId,
-          level: result.profile.level,
-          tier: result.profile.tier,
+          level: accountSnap.level,
+          tier: activeProfile.tier,
         },
         {
           onIncomingInvitesChanged: (cloudInvites) => {
@@ -2873,6 +3089,8 @@ export class Game implements Subsystem {
     this.loginLoadingActive = false;
     this.authScreenEnteringLobby = false;
     this.hasCompletedPreLobbyLogin = false;
+    this.developerCheckConfirmedFalse = false;
+    this.developerCheckPromise = null;
     this.uiManager.stopPostLoginLoading();
     this.preparedAuthSession = null;
     this.firebaseActiveUid = null;
@@ -2902,7 +3120,10 @@ export class Game implements Subsystem {
     resetR6CustomizationStorage();
     this.r6Customization = loadR6Customization();
     this.shopManager.setDeveloperMode(false);
+    this.uiManager.setDeveloperAccess(false);
     this.shopManager.resetToGuestDefaultVault();
+    glbStoreClient.clearPreviewCache();
+    void this.refreshGlbStoreCatalog();
     this.playerProfileManager.setDeveloperVerified(false);
     const resetSnap = this.playerProfileManager.resetToGuestAccount();
     this.syncSelectedCharacterAppearance();
@@ -3078,6 +3299,14 @@ export class Game implements Subsystem {
         this.cameraManager.setPreset('shop-showcase', true);
         this.cameraManager.setLobbySquadCount(1, true);
         void this.ensureRemainingWeaponGlbs(6);
+        if (
+          screen === 'shop' &&
+          this.firebaseActiveUid &&
+          !this.playerProfileManager.getSnapshot().isDeveloper &&
+          !this.developerCheckConfirmedFalse
+        ) {
+          void this.reconcileDeveloperAccessFromBackend(true);
+        }
         break;
       case 'settings':
       case 'control-editor':
@@ -3375,6 +3604,7 @@ export class Game implements Subsystem {
     this.shopManager.setCurrentCustomization(resolved);
     this.characterManager.applySelectedToPlayer();
     this.player.setCustomization(resolved);
+    this.applyEquippedGlbLoadoutToPlayer();
     this.militaryLobby.setPetKind(resolved.petId);
     this.gameplayCompanion.setKind(resolved.petId);
   }

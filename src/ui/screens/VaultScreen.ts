@@ -7,6 +7,8 @@ import {
 import { EmotePreviewCanvas } from '../../emotes/EmotePreviewCanvas';
 import { i18n } from '../../i18n/I18nManager';
 import { DEFAULT_R6_CUSTOMIZATION, type R6Customization } from '../../player/R6CustomizationData';
+import { sanitizeAccentHex } from '../../shop/GlbAssetTypes';
+import { glbStoreClient } from '../../shop/GlbStoreClient';
 import {
   DEFAULT_AVATAR_ID,
   DEFAULT_BANNER_ID,
@@ -21,6 +23,7 @@ import {
   type ShopCatalogItem,
   type ShopSnapshot,
 } from '../../shop/IShopSystem';
+import { GlbInteractivePreview } from '../components/GlbInteractivePreview';
 import {
   getAvatarSvg,
   getBannerSvg,
@@ -47,7 +50,17 @@ import {
   getWeaponSvg,
 } from '../icons/GameIcons';
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export type VaultCategory =
+  | 'characters'
   | 'clothing'
   | 'weapons'
   | 'avatars'
@@ -83,6 +96,7 @@ export interface VaultScreenCallbacks {
 }
 
 const VAULT_TABS: ReadonlyArray<{ id: VaultCategory; key: string; shopTab: ShopBrowseTab }> = [
+  { id: 'characters', key: 'vault.tab.characters', shopTab: 'characters' },
   { id: 'clothing', key: 'vault.tab.clothing', shopTab: 'clothing' },
   { id: 'weapons', key: 'vault.tab.weapons', shopTab: 'weapon-skins' },
   { id: 'avatars', key: 'vault.tab.avatars', shopTab: 'avatars' },
@@ -112,9 +126,12 @@ const WEAPON_VAULT_SUB_FILTERS: ReadonlyArray<{ id: WeaponVaultSubFilter; key: s
 
 function mapItemToVaultCategory(item: ShopCatalogItem): VaultCategory {
   switch (item.category) {
+    case 'characters':
+      return 'characters';
     case 'clothing':
     case 'outfits':
     case 'featured':
+    case 'accessories':
       return 'clothing';
     case 'weapons':
     case 'weapon-skins':
@@ -128,6 +145,7 @@ function mapItemToVaultCategory(item: ShopCatalogItem): VaultCategory {
       return 'emotes';
     case 'gloo-walls':
       return 'gloo-walls';
+    case 'helmets':
     case 'armor':
     case 'equipment':
     case 'gliders':
@@ -161,6 +179,7 @@ function isBaseDefaultItem(item: ShopCatalogItem): boolean {
 
 export class VaultScreen {
   readonly element: HTMLElement;
+  private catalog: readonly ShopCatalogItem[] = NEXUS_SHOP_CATALOG;
   private activeCategory: VaultCategory = 'clothing';
   private activeClothingSub: ClothingSubFilter = 'all';
   private activeWeaponSub: WeaponVaultSubFilter = 'all';
@@ -186,6 +205,8 @@ export class VaultScreen {
   private emotePreviewCanvas: EmotePreviewCanvas | null = null;
   private previewCanvasEmoteId: string | null = null;
   private previewCanvasContextKey = '';
+  private glbInspectorPreview: GlbInteractivePreview | null = null;
+  private glbPreviewModelKey = '';
   private previewingEmoteId: string | null = null;
   private previewRemainingSec = 0;
   private unsubI18n: (() => void) | null = null;
@@ -310,6 +331,17 @@ export class VaultScreen {
     }
   }
 
+  setCatalog(items: readonly ShopCatalogItem[]): void {
+    this.catalog = items.length > 0 ? items : NEXUS_SHOP_CATALOG;
+    this.syncTotalOwnedCount();
+    if (this.hasOpened && this.element.style.display !== 'none') {
+      this.renderTabs();
+      this.ensureSelectedInView();
+      this.renderInspector();
+      this.renderGrid();
+    }
+  }
+
   updateSnapshot(snapshot: ShopSnapshot): void {
     this.shopSnapshot = snapshot;
     this.syncTotalOwnedCount();
@@ -339,6 +371,7 @@ export class VaultScreen {
     this.bannerPreviewModal.close();
     this.stopEmotePreview(true);
     this.clearEmotePreview();
+    this.clearGlbInspectorPreview();
   }
 
   private refreshLocale(): void {
@@ -356,7 +389,7 @@ export class VaultScreen {
   }
 
   private getOwnedItems(): ShopCatalogItem[] {
-    return NEXUS_SHOP_CATALOG.filter((item) => isShopItemOwned(this.shopSnapshot, item));
+    return this.catalog.filter((item) => isShopItemOwned(this.shopSnapshot, item));
   }
 
   private syncTotalOwnedCount(): void {
@@ -663,7 +696,7 @@ export class VaultScreen {
 
   private syncPreviewUiState(): void {
     const selectedItem = this.selectedItemId
-      ? NEXUS_SHOP_CATALOG.find((i) => i.id === this.selectedItemId)
+      ? this.catalog.find((i) => i.id === this.selectedItemId)
       : undefined;
     const isSelectedPreviewing = Boolean(
       selectedItem?.emoteId && this.previewingEmoteId === selectedItem.emoteId,
@@ -723,17 +756,26 @@ export class VaultScreen {
     this.previewCanvasContextKey = '';
   }
 
+  private clearGlbInspectorPreview(): void {
+    if (this.glbInspectorPreview) {
+      this.glbInspectorPreview.dispose();
+      this.glbInspectorPreview = null;
+    }
+    this.glbPreviewModelKey = '';
+  }
+
   private renderInspector(): void {
     this.inspectorSnapshotCancel?.();
     this.inspectorSnapshotCancel = null;
 
     const item = this.selectedItemId
-      ? NEXUS_SHOP_CATALOG.find((i) => i.id === this.selectedItemId)
+      ? this.catalog.find((i) => i.id === this.selectedItemId)
       : undefined;
 
     if (!item) {
       this.stopEmotePreview(true);
       this.clearEmotePreview();
+      this.clearGlbInspectorPreview();
       const tabSpec = VAULT_TABS.find((t) => t.id === this.activeCategory);
       this.inspectorEl.innerHTML = `
         <div class="flex flex-col items-center text-center gap-3 py-6 px-2">
@@ -760,17 +802,22 @@ export class VaultScreen {
     }
 
     const loc = i18n.translateShopItem(item.id, item.name, item.description, item.lootId);
+    const safeName = escapeHtml(loc.name);
+    const safeDesc = escapeHtml(loc.desc);
+    const safeAccentHex = sanitizeAccentHex(item.accentHex, '#38bdf8');
     const equipped = isShopItemEquipped(this.shopSnapshot, this.activeCustomization, item);
     const baseDefault = isBaseDefaultItem(item);
     const categoryLabel = i18n.translateShopCategory(item.category);
     const subLabel = item.subCategory ? i18n.translateShopSubCategory(item.subCategory) : '';
-    const metaLine =
+    const metaLine = escapeHtml(
       subLabel && subLabel !== categoryLabel
         ? `${i18n.translateRarity(item.rarity)} · ${categoryLabel} · ${subLabel}`
-        : `${i18n.translateRarity(item.rarity)} · ${categoryLabel}`;
+        : `${i18n.translateRarity(item.rarity)} · ${categoryLabel}`,
+    );
 
     const isSvgCosmetic = Boolean(item.avatarId || item.bannerId);
     const isEmoteItem = Boolean(item.emoteId);
+    const isGlbItem = Boolean(item.glbAsset);
     const isPreviewingThis = Boolean(item.emoteId && this.previewingEmoteId === item.emoteId);
     const wheelSlotsHtml = isEmoteItem ? this.buildWheelAssignerHtml(item) : '';
 
@@ -783,6 +830,18 @@ export class VaultScreen {
       this.emotePreviewCanvas.element.remove();
     } else {
       this.clearEmotePreview();
+    }
+
+    const nextGlbKey = item.glbAsset
+      ? `${item.glbAsset.assetId}|${item.glbAsset.modelUrl}|${item.glbAsset.equipSlot}|${item.glbAsset.scaleMultiplier}`
+      : '';
+    const canReuseGlb = Boolean(
+      isGlbItem && this.glbInspectorPreview && this.glbPreviewModelKey === nextGlbKey,
+    );
+    if (canReuseGlb && this.glbInspectorPreview?.element.parentElement) {
+      this.glbInspectorPreview.element.remove();
+    } else if (!isGlbItem || !canReuseGlb) {
+      this.clearGlbInspectorPreview();
     }
 
     const statusBadgeHtml = equipped
@@ -812,8 +871,8 @@ export class VaultScreen {
                     : spec.value;
                 return `
               <div class="bg-slate-900/90 border border-slate-800 rounded-md px-2.5 py-2 flex flex-col gap-0.5">
-                <span class="text-[11px] text-slate-400 truncate">${i18n.t(spec.labelKey as Parameters<typeof i18n.t>[0])}</span>
-                <span class="text-xs font-bold text-white tabular-nums truncate">${displayValue}</span>
+                <span class="text-[11px] text-slate-400 truncate">${escapeHtml(i18n.t(spec.labelKey as Parameters<typeof i18n.t>[0]))}</span>
+                <span class="text-xs font-bold text-white tabular-nums truncate">${escapeHtml(displayValue)}</span>
               </div>`;
               })
               .join('')}
@@ -825,11 +884,13 @@ export class VaultScreen {
           this.feedback.ok
             ? 'bg-emerald-500/15 border-emerald-400/50 text-emerald-200'
             : 'bg-rose-500/15 border-rose-400/50 text-rose-200'
-        }">${this.feedback.text}</div>`
+        }">${escapeHtml(this.feedback.text)}</div>`
       : '';
 
     let viewportInnerHtml = '';
-    if (isEmoteItem) {
+    if (isGlbItem) {
+      viewportInnerHtml = `<div data-role="glb-inspector-mount" class="absolute inset-0 w-full h-full"></div>`;
+    } else if (isEmoteItem) {
       viewportInnerHtml = `
         <div data-role="live-emote-mount" class="absolute inset-0 w-full h-full"></div>
         <div class="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2 pointer-events-none">
@@ -853,13 +914,13 @@ export class VaultScreen {
         ? `<div data-action="preview-avatar" class="w-full h-full cursor-pointer group relative overflow-hidden">
              ${getAvatarPreviewHtml(item.avatarId, 'w-full h-full transition-transform duration-300 group-hover:scale-[1.03]', 'cover')}
            </div>`
-        : `<div data-action="preview-avatar" class="w-32 h-32 sm:w-40 sm:h-40 rounded-lg overflow-hidden border-2 shadow-xl cursor-pointer" style="border-color:${item.accentHex}">${getAvatarSvg(item.avatarId, 'w-full h-full')}</div>`;
+        : `<div data-action="preview-avatar" class="w-32 h-32 sm:w-40 sm:h-40 rounded-lg overflow-hidden border-2 shadow-xl cursor-pointer" style="border-color:${safeAccentHex}">${getAvatarSvg(item.avatarId, 'w-full h-full')}</div>`;
     } else if (item.bannerId) {
       viewportInnerHtml = hasBannerImage(item.bannerId)
         ? `<div data-action="preview-banner" class="w-full h-full cursor-pointer group relative overflow-hidden">
              ${getBannerPreviewHtml(item.bannerId, 'w-full h-full transition-transform duration-300 group-hover:scale-[1.03]', 'cover')}
            </div>`
-        : `<div data-action="preview-banner" class="w-full h-full p-3 flex items-center justify-center cursor-pointer"><div class="w-full aspect-[16/6] rounded-md overflow-hidden border shadow-xl" style="border-color:${item.accentHex}">${getBannerSvg(item.bannerId, 'w-full h-full')}</div></div>`;
+        : `<div data-action="preview-banner" class="w-full h-full p-3 flex items-center justify-center cursor-pointer"><div class="w-full aspect-[16/6] rounded-md overflow-hidden border shadow-xl" style="border-color:${safeAccentHex}">${getBannerSvg(item.bannerId, 'w-full h-full')}</div></div>`;
     } else {
       viewportInnerHtml = `
         <div data-role="inspector-fallback" class="w-16 h-16 opacity-35 pointer-events-none flex items-center justify-center">
@@ -868,7 +929,7 @@ export class VaultScreen {
         <img
           data-role="inspector-img"
           src=""
-          alt="${loc.name}"
+          alt="${safeName}"
           referrerpolicy="no-referrer"
           class="absolute inset-0 w-full h-full object-contain p-3 opacity-0 transition-opacity duration-200"
         />`;
@@ -878,15 +939,15 @@ export class VaultScreen {
       <div
         data-role="inspector-viewport"
         class="relative w-full aspect-[4/3] rounded-md overflow-hidden border border-slate-800 bg-slate-950 flex items-center justify-center shrink-0"
-        style="background: radial-gradient(circle at 50% 45%, ${item.accentHex}24 0%, rgba(15, 23, 42, 0.96) 68%, #020617 100%);"
+        style="background: radial-gradient(circle at 50% 45%, ${safeAccentHex}24 0%, rgba(15, 23, 42, 0.96) 68%, #020617 100%);"
       >
         ${viewportInnerHtml}
       </div>
 
       <div class="flex flex-col gap-1.5 min-w-0">
         <div class="text-xs font-semibold text-sky-300 truncate">${metaLine}</div>
-        <h2 class="text-lg font-black tracking-wide text-white leading-tight">${loc.name}</h2>
-        <p class="text-xs text-slate-300 leading-relaxed">${loc.desc}</p>
+        <h2 class="text-lg font-black tracking-wide text-white leading-tight">${safeName}</h2>
+        <p class="text-xs text-slate-300 leading-relaxed">${safeDesc}</p>
       </div>
 
       ${specsHtml}
@@ -920,7 +981,7 @@ export class VaultScreen {
                  data-role="vault-action-btn"
                  ${actionDisabled ? 'disabled' : ''}
                  class="${actionClass}"
-               >${actionLabel}</button>
+               >${escapeHtml(actionLabel)}</button>
              </div>`
           : item.glooSkinId
             ? `<div class="grid grid-cols-2 gap-2">
@@ -934,7 +995,7 @@ export class VaultScreen {
                    data-role="vault-action-btn"
                    ${actionDisabled ? 'disabled' : ''}
                    class="${actionClass}"
-                 >${actionLabel}</button>
+                 >${escapeHtml(actionLabel)}</button>
                </div>`
             : item.avatarId
               ? `<div class="grid grid-cols-2 gap-2">
@@ -948,7 +1009,7 @@ export class VaultScreen {
                      data-role="vault-action-btn"
                      ${actionDisabled ? 'disabled' : ''}
                      class="${actionClass}"
-                   >${actionLabel}</button>
+                   >${escapeHtml(actionLabel)}</button>
                  </div>`
               : item.bannerId
                 ? `<div class="grid grid-cols-2 gap-2">
@@ -962,18 +1023,36 @@ export class VaultScreen {
                        data-role="vault-action-btn"
                        ${actionDisabled ? 'disabled' : ''}
                        class="${actionClass}"
-                     >${actionLabel}</button>
+                     >${escapeHtml(actionLabel)}</button>
                    </div>`
                 : `<button
                      type="button"
                      data-role="vault-action-btn"
                      ${actionDisabled ? 'disabled' : ''}
                      class="${actionClass}"
-                   >${actionLabel}</button>`
+                   >${escapeHtml(actionLabel)}</button>`
       }
     `;
 
-    if (isEmoteItem && item.emoteId) {
+    if (isGlbItem && item.glbAsset) {
+      const mount = this.inspectorEl.querySelector<HTMLElement>('[data-role="glb-inspector-mount"]');
+      if (mount) {
+        if (canReuseGlb && this.glbInspectorPreview) {
+          mount.appendChild(this.glbInspectorPreview.element);
+        } else {
+          const preview = new GlbInteractivePreview({ heightClass: 'h-full' });
+          preview.element.classList.remove('border', 'border-slate-800');
+          mount.appendChild(preview.element);
+          this.glbInspectorPreview = preview;
+          this.glbPreviewModelKey = nextGlbKey;
+          void preview.loadFromUrl(
+            item.glbAsset.modelUrl,
+            item.glbAsset.equipSlot,
+            item.glbAsset.scaleMultiplier,
+          );
+        }
+      }
+    } else if (isEmoteItem && item.emoteId) {
       const mount = this.inspectorEl.querySelector<HTMLElement>('[data-role="live-emote-mount"]');
       if (mount) {
         if (canReuseCanvas && this.emotePreviewCanvas) {
@@ -1036,7 +1115,7 @@ export class VaultScreen {
           this.callbacks.onPreviewGlooWall?.(glooSkinId);
           const viewport = this.inspectorEl.querySelector<HTMLElement>('[data-role="inspector-viewport"]');
           if (viewport && imgEl) {
-            viewport.style.boxShadow = `inset 0 0 42px ${item.accentHex}88, 0 0 24px ${item.accentHex}55`;
+            viewport.style.boxShadow = `inset 0 0 42px ${safeAccentHex}88, 0 0 24px ${safeAccentHex}55`;
             imgEl.style.transition = 'transform 260ms cubic-bezier(0.22, 1, 0.36, 1)';
             imgEl.style.transform = 'scale(0.86, 0.25) translateY(24%)';
             requestAnimationFrame(() => {
@@ -1174,12 +1253,16 @@ export class VaultScreen {
 
     for (const item of items) {
       const loc = i18n.translateShopItem(item.id, item.name, item.description, item.lootId);
+      const safeName = escapeHtml(loc.name);
+      const safeAccentHex = sanitizeAccentHex(item.accentHex, '#38bdf8');
       const isSelected = item.id === this.selectedItemId;
       const equipped = isShopItemEquipped(this.shopSnapshot, this.activeCustomization, item);
       const baseDefault = isBaseDefaultItem(item);
-      const subLabel = item.subCategory
-        ? i18n.translateShopSubCategory(item.subCategory)
-        : i18n.translateShopCategory(item.category);
+      const subLabel = escapeHtml(
+        item.subCategory
+          ? i18n.translateShopSubCategory(item.subCategory)
+          : i18n.translateShopCategory(item.category),
+      );
 
       const card = document.createElement('article');
       card.dataset.vaultItemId = item.id;
@@ -1197,6 +1280,9 @@ export class VaultScreen {
       const cornerStateHtml = equipped
         ? `<span class="absolute top-2 right-2 px-2 py-0.5 rounded bg-emerald-500/25 border border-emerald-400/75 text-[10px] font-black text-emerald-200">${i18n.t('common.equipped')}</span>`
         : `<span class="absolute top-2 right-2 px-2 py-0.5 rounded bg-sky-500/20 border border-sky-400/60 text-[10px] font-bold text-sky-200">${i18n.t('common.inVault')}</span>`;
+      const glbBadgeHtml = item.glbAsset
+        ? `<span class="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-slate-950/85 border border-sky-400/50 text-[9px] font-black tracking-wider text-sky-200">3D GLB</span>`
+        : '';
 
       const actionBtnClass = equipped
         ? baseDefault
@@ -1214,7 +1300,7 @@ export class VaultScreen {
       const previewBtnHtml = item.emoteId
         ? `<button
              type="button"
-             data-card-preview="${item.emoteId}"
+             data-card-preview="${escapeHtml(item.emoteId)}"
              class="${
                isDancePreviewing
                  ? 'px-2.5 py-2 rounded-md text-xs font-bold uppercase whitespace-nowrap shrink-0 min-h-[40px] bg-orange-500/25 border border-orange-400 text-orange-100'
@@ -1224,13 +1310,13 @@ export class VaultScreen {
         : item.avatarId
           ? `<button
                type="button"
-               data-card-avatar-preview="${item.id}"
+               data-card-avatar-preview="${escapeHtml(item.id)}"
                class="nexus-btn-secondary px-2.5 py-2 rounded-md text-xs font-bold uppercase whitespace-nowrap shrink-0 min-h-[40px] border-sky-400/50 text-sky-200"
              >${i18n.t('shop.preview')}</button>`
           : item.bannerId
             ? `<button
                  type="button"
-                 data-card-banner-preview="${item.id}"
+                 data-card-banner-preview="${escapeHtml(item.id)}"
                  class="nexus-btn-secondary px-2.5 py-2 rounded-md text-xs font-bold uppercase whitespace-nowrap shrink-0 min-h-[40px] border-sky-400/50 text-sky-200"
                >${i18n.t('shop.preview')}</button>`
             : '';
@@ -1239,18 +1325,18 @@ export class VaultScreen {
       const viewportBody = item.avatarId
         ? hasAvatarImage(item.avatarId)
           ? getAvatarPreviewHtml(item.avatarId, 'w-full h-full transition-transform duration-300', 'cover')
-          : `<div class="w-20 h-20 rounded-md overflow-hidden border shadow-md" style="border-color:${item.accentHex}">${getAvatarSvg(item.avatarId, 'w-full h-full')}</div>`
+          : `<div class="w-20 h-20 rounded-md overflow-hidden border shadow-md" style="border-color:${safeAccentHex}">${getAvatarSvg(item.avatarId, 'w-full h-full')}</div>`
         : item.bannerId
           ? hasBannerImage(item.bannerId)
             ? getBannerPreviewHtml(item.bannerId, 'w-full h-full transition-transform duration-300', 'cover')
-            : `<div class="w-full h-full p-2.5 flex items-center justify-center"><div class="w-full aspect-[16/6] rounded overflow-hidden border shadow-md" style="border-color:${item.accentHex}">${getBannerSvg(item.bannerId, 'w-full h-full')}</div></div>`
+            : `<div class="w-full h-full p-2.5 flex items-center justify-center"><div class="w-full aspect-[16/6] rounded overflow-hidden border shadow-md" style="border-color:${safeAccentHex}">${getBannerSvg(item.bannerId, 'w-full h-full')}</div></div>`
           : `<div data-card-fallback class="w-12 h-12 opacity-35 pointer-events-none flex items-center justify-center">
                ${this.getFallbackIconSvg(item)}
              </div>
              <img
                data-card-img
                src=""
-               alt="${loc.name}"
+               alt="${safeName}"
                referrerpolicy="no-referrer"
                class="absolute inset-0 w-full h-full object-contain p-2.5 opacity-0 transition-opacity duration-200"
              />`;
@@ -1258,18 +1344,19 @@ export class VaultScreen {
       card.innerHTML = `
         <div
           class="relative w-full aspect-[4/3] overflow-hidden border-b border-slate-800/90 flex items-center justify-center"
-          style="background: radial-gradient(circle at 50% 48%, ${item.accentHex}20 0%, rgba(15, 23, 42, 0.94) 70%, #020617 100%);"
+          style="background: radial-gradient(circle at 50% 48%, ${safeAccentHex}20 0%, rgba(15, 23, 42, 0.94) 70%, #020617 100%);"
         >
           ${viewportBody}
+          ${glbBadgeHtml}
           ${cornerStateHtml}
         </div>
 
         <div class="p-3.5 flex flex-col justify-between gap-3 flex-1">
           <div class="flex flex-col gap-1 min-w-0">
             <div class="text-xs font-medium text-slate-400 truncate">
-              ${i18n.translateRarity(item.rarity)} · ${subLabel}
+              ${escapeHtml(i18n.translateRarity(item.rarity))} · ${subLabel}
             </div>
-            <h3 class="text-sm font-extrabold tracking-wide text-white truncate">${loc.name}</h3>
+            <h3 class="text-sm font-extrabold tracking-wide text-white truncate">${safeName}</h3>
           </div>
 
           <div class="pt-2.5 border-t border-slate-800/90 flex items-center justify-between gap-2">
@@ -1283,7 +1370,7 @@ export class VaultScreen {
                 data-card-equip
                 ${equipped && baseDefault ? 'disabled' : ''}
                 class="${actionBtnClass}"
-              >${actionBtnLabel}</button>
+              >${escapeHtml(actionBtnLabel)}</button>
             </div>
           </div>
         </div>
@@ -1292,7 +1379,23 @@ export class VaultScreen {
       if (!isSvgCosmetic) {
         const imgEl = card.querySelector<HTMLImageElement>('[data-card-img]');
         const fallbackEl = card.querySelector<HTMLElement>('[data-card-fallback]');
-        if (imgEl) {
+        if (imgEl && item.glbAsset) {
+          if (item.imageUrl) {
+            let cancelled = false;
+            this.gridSnapshotCancels.push(() => {
+              cancelled = true;
+            });
+            void glbStoreClient.resolvePreviewObjectUrl(item.imageUrl).then((objUrl) => {
+              if (cancelled || !objUrl) return;
+              imgEl.src = objUrl;
+              imgEl.classList.remove('opacity-0');
+              if (fallbackEl) {
+                fallbackEl.classList.remove('opacity-35');
+                fallbackEl.classList.add('opacity-0', 'hidden');
+              }
+            });
+          }
+        } else if (imgEl) {
           const cancel = this.previewRenderer.requestShopItemSnapshot(
             item,
             this.activeCharacter,
@@ -1356,7 +1459,7 @@ export class VaultScreen {
     for (const card of cards) {
       const id = card.dataset.vaultItemId;
       const selected = id === this.selectedItemId;
-      const item = id ? NEXUS_SHOP_CATALOG.find((i) => i.id === id) : undefined;
+      const item = id ? this.catalog.find((i) => i.id === id) : undefined;
       const equipped = item
         ? isShopItemEquipped(this.shopSnapshot, this.activeCustomization, item)
         : false;
@@ -1379,6 +1482,7 @@ export class VaultScreen {
     this.inspectorSnapshotCancel?.();
     this.inspectorSnapshotCancel = null;
     this.clearEmotePreview();
+    this.clearGlbInspectorPreview();
     this.unsubI18n?.();
     this.unsubI18n = null;
   }

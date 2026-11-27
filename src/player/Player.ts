@@ -14,7 +14,7 @@ import {
 } from './PlayerAnimationController';
 import { PlayerMovement } from './PlayerMovement';
 import { PlayerStats, type PlayerStatsConfig } from './PlayerStats';
-import { PlayerVisuals } from './PlayerVisuals';
+import { PlayerVisuals, type PlayerGlbLoadout } from './PlayerVisuals';
 
 const PLAYER_VISUAL_SCALE_MULTIPLIER = 0.88;
 
@@ -350,6 +350,10 @@ export class Player implements Subsystem {
 
   setCustomization(custom: Parameters<PlayerVisuals['setCustomization']>[0]): void {
     this.visuals.setCustomization(custom);
+  }
+
+  setGlbLoadout(loadout: PlayerGlbLoadout): void {
+    this.visuals.setGlbLoadout(loadout);
   }
 
   setArenaArmorTier(tier: 0 | 1 | 2 | 3 | null): void {

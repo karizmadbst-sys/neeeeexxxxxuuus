@@ -12,6 +12,8 @@ import {
 } from '../characters/R6ModelBuilder';
 import type { AssetManager } from '../core/AssetManager';
 import type { Subsystem } from '../core/Types';
+import type { GlbEquipSlot } from '../shop/GlbAssetTypes';
+import { glbModelCache, type InstantiatedGlbModel } from '../shop/GlbModelCache';
 import { clamp, damp } from '../utils/MathUtils';
 import { updateWorldMatrixChain } from '../utils/TransformUtils';
 import {
@@ -246,10 +248,27 @@ function getSharedVisorMat(hex: string): THREE.MeshStandardMaterial {
   return mat;
 }
 
+export interface GlbEquippedSlotSpec {
+  id: string;
+  modelUrl: string;
+  scaleMultiplier: number;
+  equipSlot: GlbEquipSlot;
+}
+
+export interface PlayerGlbLoadout {
+  character?: GlbEquippedSlotSpec | null;
+  outfit?: GlbEquippedSlotSpec | null;
+  backpack?: GlbEquippedSlotSpec | null;
+  helmet?: GlbEquippedSlotSpec | null;
+  armor?: GlbEquippedSlotSpec | null;
+  accessory?: GlbEquippedSlotSpec | null;
+}
+
 export class PlayerVisuals implements Subsystem {
   readonly root = new THREE.Group();
 
   private readonly rigPivot = new THREE.Group();
+  private readonly glbBodyGroup = new THREE.Group();
   private readonly contactShadowMesh: THREE.Mesh;
 
   private readonly weaponSocket = new THREE.Group();
@@ -312,6 +331,19 @@ export class PlayerVisuals implements Subsystem {
   private arenaHelmetTierOverride: 0 | 1 | 2 | 3 | null = null;
   private arenaBackpackTierOverride: 0 | 1 | 2 | 3 | null = null;
   private modelScale = 1.0;
+
+  private glbLoadout: PlayerGlbLoadout = {};
+  private glbBodyKey = '';
+  private glbBodyLoadSeq = 0;
+  private glbBodyInstance: InstantiatedGlbModel | null = null;
+  private glbBodyMixer: THREE.AnimationMixer | null = null;
+  private glbBodyActions = new Map<string, THREE.AnimationAction>();
+  private glbBodyActiveAction: THREE.AnimationAction | null = null;
+  private glbOverlaySeq = 0;
+  private readonly glbOverlayInstances = new Map<
+    'backpack' | 'helmet' | 'armor' | 'accessory',
+    { key: string; instance: InstantiatedGlbModel }
+  >();
 
   private weaponEquipped = false;
   private equippedWeaponId: string | null = null;
@@ -467,6 +499,221 @@ export class PlayerVisuals implements Subsystem {
 
   getCustomization(): R6Customization {
     return { ...this.customization };
+  }
+
+  setGlbLoadout(loadout: PlayerGlbLoadout): void {
+    this.glbLoadout = { ...loadout };
+    const bodySpec = loadout.outfit ?? loadout.character ?? null;
+    const nextBodyKey = bodySpec
+      ? `${bodySpec.id}|${bodySpec.modelUrl}|${bodySpec.equipSlot}|${bodySpec.scaleMultiplier}`
+      : '';
+    if (nextBodyKey !== this.glbBodyKey) {
+      this.glbBodyKey = nextBodyKey;
+      const seq = ++this.glbBodyLoadSeq;
+      if (!bodySpec) {
+        this.clearGlbBody();
+      } else {
+        void glbModelCache
+          .instantiateModel(bodySpec.modelUrl, bodySpec.equipSlot, bodySpec.scaleMultiplier)
+          .then((instance) => {
+            if (seq !== this.glbBodyLoadSeq || this.glbBodyKey !== nextBodyKey) {
+              instance.dispose();
+              return;
+            }
+            this.applyGlbBodyInstance(instance);
+          })
+          .catch(() => {
+            if (seq === this.glbBodyLoadSeq && this.glbBodyKey === nextBodyKey) {
+              this.clearGlbBody();
+            }
+          });
+      }
+    }
+    this.syncGlbCosmeticOverlays();
+  }
+
+  private clearGlbBody(): void {
+    if (this.glbBodyMixer) {
+      this.glbBodyMixer.stopAllAction();
+      this.glbBodyMixer = null;
+    }
+    this.glbBodyActions.clear();
+    this.glbBodyActiveAction = null;
+    if (this.glbBodyInstance) {
+      this.glbBodyGroup.remove(this.glbBodyInstance.root);
+      this.glbBodyInstance.dispose();
+      this.glbBodyInstance = null;
+    }
+    this.glbBodyGroup.removeFromParent();
+    this.glbBodyGroup.position.set(0, 0, 0);
+    this.glbBodyGroup.rotation.set(0, 0, 0);
+    if (this.modelGroup) {
+      this.modelGroup.visible = true;
+      this.attachStandardRigMounts(this.modelGroup);
+    }
+  }
+
+  private applyGlbBodyInstance(instance: InstantiatedGlbModel): void {
+    this.clearGlbBody();
+    this.glbBodyInstance = instance;
+    if (this.modelGroup) {
+      this.modelGroup.visible = false;
+    }
+    this.glbBodyGroup.add(instance.root);
+    this.rigPivot.add(this.glbBodyGroup);
+
+    // Bind animations if present
+    if (instance.animations.length > 0) {
+      const mixer = new THREE.AnimationMixer(instance.root);
+      this.glbBodyMixer = mixer;
+      for (const clip of instance.animations) {
+        const key = clip.name.toLowerCase();
+        const action = mixer.clipAction(clip);
+        this.glbBodyActions.set(key, action);
+      }
+      const idleClip =
+        instance.animations.find((c) => /idle/i.test(c.name)) ?? instance.animations[0];
+      if (idleClip) {
+        const act = mixer.clipAction(idleClip);
+        act.reset().play();
+        this.glbBodyActiveAction = act;
+      }
+    }
+
+    // Attach weaponSocket & backAccessoryGroup onto matching bone if found, or sensible body socket
+    let rightHandBone: THREE.Bone | null = null;
+    let chestBone: THREE.Bone | null = null;
+    instance.root.traverse((obj) => {
+      if ((obj as THREE.Bone).isBone) {
+        const lower = obj.name.toLowerCase();
+        if (!rightHandBone && /(righthand|hand_r|hand\.r|r_hand|mixamorigrighthand)/.test(lower)) {
+          rightHandBone = obj as THREE.Bone;
+        }
+        if (!chestBone && /(chest|upperchest|spine2|spine_02|mixamorigspine2)/.test(lower)) {
+          chestBone = obj as THREE.Bone;
+        }
+      }
+      if ((obj as THREE.Mesh).isMesh) {
+        obj.castShadow = this.shadowCastingEnabled;
+        obj.receiveShadow = true;
+      }
+    });
+
+    this.weaponSocket.removeFromParent();
+    this.backAccessoryGroup.removeFromParent();
+    if (rightHandBone) {
+      (rightHandBone as THREE.Bone).add(this.weaponSocket);
+      this.weaponSocket.position.set(0, 0, 0);
+    } else {
+      this.glbBodyGroup.add(this.weaponSocket);
+      this.weaponSocket.position.set(-0.28, 0.96, 0.16);
+    }
+    if (chestBone) {
+      (chestBone as THREE.Bone).add(this.backAccessoryGroup);
+    } else {
+      this.glbBodyGroup.add(this.backAccessoryGroup);
+      this.backAccessoryGroup.position.set(0, 1.18, 0);
+    }
+  }
+
+  private attachStandardRigMounts(scene: THREE.Group): void {
+    this.weaponSocket.removeFromParent();
+    this.backAccessoryGroup.removeFromParent();
+    this.backAccessoryGroup.position.set(0, 0, 0);
+    this.weaponSocket.position.set(0, 0, 0);
+    if (this.triggerHandBone) {
+      this.triggerHandBone.add(this.weaponSocket);
+    } else {
+      scene.add(this.weaponSocket);
+    }
+    if (this.chestBone) {
+      this.chestBone.add(this.backAccessoryGroup);
+    } else {
+      scene.add(this.backAccessoryGroup);
+    }
+  }
+
+  private syncGlbCosmeticOverlays(): void {
+    const slots: Array<{
+      slot: 'backpack' | 'helmet' | 'armor' | 'accessory';
+      spec: GlbEquippedSlotSpec | null | undefined;
+      mount: THREE.Group;
+      offset: [number, number, number];
+    }> = [
+      {
+        slot: 'backpack',
+        spec: this.glbLoadout.backpack,
+        mount: this.backAccessoryGroup,
+        offset: [0, 0.06, -0.26],
+      },
+      {
+        slot: 'helmet',
+        spec: this.glbLoadout.helmet,
+        mount: this.headArmorGroup,
+        offset: [0, 0.21, 0],
+      },
+      {
+        slot: 'armor',
+        spec: this.glbLoadout.armor,
+        mount: this.torsoArmorGroup,
+        offset: [0, 0.06, 0.02],
+      },
+      {
+        slot: 'accessory',
+        spec: this.glbLoadout.accessory,
+        mount: this.headAccessoryGroup,
+        offset: [0, 0.21, 0],
+      },
+    ];
+
+    const seq = ++this.glbOverlaySeq;
+    for (const entry of slots) {
+      const nextKey = entry.spec
+        ? `${entry.spec.id}|${entry.spec.modelUrl}|${entry.spec.scaleMultiplier}`
+        : '';
+      const existing = this.glbOverlayInstances.get(entry.slot);
+      if (existing && existing.key === nextKey) {
+        if (!entry.mount.children.includes(existing.instance.root)) {
+          existing.instance.root.position.set(...entry.offset);
+          entry.mount.add(existing.instance.root);
+        }
+        continue;
+      }
+      if (existing) {
+        existing.instance.root.removeFromParent();
+        existing.instance.dispose();
+        this.glbOverlayInstances.delete(entry.slot);
+      }
+      if (!entry.spec) continue;
+      const spec = entry.spec;
+      void glbModelCache
+        .instantiateModel(spec.modelUrl, spec.equipSlot, spec.scaleMultiplier)
+        .then((instance) => {
+          const curSpec = this.glbLoadout[entry.slot];
+          const curKey = curSpec
+            ? `${curSpec.id}|${curSpec.modelUrl}|${curSpec.scaleMultiplier}`
+            : '';
+          if (curKey !== nextKey && seq > this.glbOverlaySeq) {
+            instance.dispose();
+            return;
+          }
+          if (curKey !== nextKey) {
+            instance.dispose();
+            return;
+          }
+          const prev = this.glbOverlayInstances.get(entry.slot);
+          if (prev) {
+            prev.instance.root.removeFromParent();
+            prev.instance.dispose();
+          }
+          instance.root.position.set(...entry.offset);
+          entry.mount.add(instance.root);
+          this.glbOverlayInstances.set(entry.slot, { key: nextKey, instance });
+        })
+        .catch(() => {
+          // Ignore transient GLB overlay load errors cleanly
+        });
+    }
   }
 
   setCustomization(custom: R6Customization): void {
@@ -1085,6 +1332,11 @@ export class PlayerVisuals implements Subsystem {
 
     this.applyCustomizationMaterialsAndGear();
 
+    if (this.glbBodyInstance) {
+      scene.visible = false;
+      this.applyGlbBodyInstance(this.glbBodyInstance);
+    }
+
     // Restore attached weapons if any
     if (savedHandWeapon) {
       this.weaponSocket.clear();
@@ -1270,6 +1522,7 @@ export class PlayerVisuals implements Subsystem {
     }
 
     this.rebuildBackHolster();
+    this.syncGlbCosmeticOverlays();
   }
 
   private resolveBaseLocomotionState(snapshot: PlayerStateSnapshot): PlayerAnimationState {
@@ -3423,6 +3676,50 @@ export class PlayerVisuals implements Subsystem {
 
     const baseState = this.updateLocomotionAndOverlayMixer(snapshot, delta);
 
+    if (this.glbBodyInstance) {
+      if (this.glbBodyMixer) {
+        const wantClipKey =
+          baseState === 'Run'
+            ? 'run'
+            : baseState === 'Walk'
+              ? 'walk'
+              : baseState === 'Jump' || baseState === 'Fall'
+                ? 'jump'
+                : 'idle';
+        let nextAction: THREE.AnimationAction | undefined;
+        for (const [clipName, act] of this.glbBodyActions.entries()) {
+          if (clipName.includes(wantClipKey)) {
+            nextAction = act;
+            break;
+          }
+        }
+        if (nextAction && nextAction !== this.glbBodyActiveAction) {
+          nextAction.reset().play();
+          if (this.glbBodyActiveAction) {
+            nextAction.crossFadeFrom(this.glbBodyActiveAction, 0.16, false);
+          }
+          this.glbBodyActiveAction = nextAction;
+        }
+        this.glbBodyMixer.update(delta);
+      } else {
+        // Subtle procedural locomotion fallback for static/rigless GLB character models
+        if (baseState === 'Walk' || baseState === 'Run') {
+          const freq = baseState === 'Run' ? 11.5 : 8.0;
+          this.glbBodyGroup.position.y = Math.abs(Math.sin(elapsed * freq)) * 0.045;
+          this.glbBodyGroup.rotation.x = damp(this.glbBodyGroup.rotation.x, baseState === 'Run' ? 0.1 : 0.05, 10, delta);
+        } else {
+          this.glbBodyGroup.position.y = Math.sin(elapsed * 2.1) * 0.012;
+          this.glbBodyGroup.rotation.x = damp(this.glbBodyGroup.rotation.x, 0, 10, delta);
+        }
+      }
+      this.contactShadowMesh.visible = baseState !== 'Skydive' && baseState !== 'Death';
+      if (this.contactShadowMesh.visible) {
+        const sScale = (baseState === 'Parachute' ? 0.55 : 1.0) * this.modelScale;
+        this.contactShadowMesh.scale.setScalar(sScale);
+      }
+      return;
+    }
+
     let poseUpdatedThisFrame = true;
     if (this.mixer) {
       if (reducedDetail) {
@@ -3666,6 +3963,14 @@ export class PlayerVisuals implements Subsystem {
   }
 
   dispose(): void {
+    this.glbBodyLoadSeq++;
+    this.glbOverlaySeq++;
+    this.clearGlbBody();
+    for (const entry of this.glbOverlayInstances.values()) {
+      entry.instance.root.removeFromParent();
+      entry.instance.dispose();
+    }
+    this.glbOverlayInstances.clear();
     this.disposeCurrentRig();
     this.overlayShadowMeshes.length = 0;
     this.overlayDetailMeshes.length = 0;

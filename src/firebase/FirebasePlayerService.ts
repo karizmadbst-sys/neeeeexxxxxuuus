@@ -1159,3 +1159,92 @@ export class FirebasePlayerService {
     }
   }
 }
+
+export interface DeveloperVerificationOutcome {
+  verifiedDeveloper: boolean;
+  reachable: boolean;
+  profile?: RankedProfile;
+}
+
+export async function verifyDeveloperAuthorizationStatus(
+  idToken: string,
+  fetchJson: typeof fetchApiJson = fetchApiJson,
+): Promise<DeveloperVerificationOutcome> {
+  const cleanedToken = typeof idToken === 'string' ? idToken.trim() : '';
+  if (!cleanedToken) {
+    return { verifiedDeveloper: false, reachable: true };
+  }
+
+  try {
+    const { res, data } = await fetchJson<{
+      ok?: boolean;
+      isDeveloper?: boolean;
+      error?: string;
+    }>(
+      getApiUrl('/api/auth/developer-status'),
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${cleanedToken}`,
+        },
+      },
+      'Failed to verify developer authorization status.',
+    );
+
+    if (!res.ok) {
+      return {
+        verifiedDeveloper: false,
+        reachable: res.status < 500,
+      };
+    }
+
+    if (data?.isDeveloper !== true) {
+      return { verifiedDeveloper: false, reachable: true };
+    }
+
+    try {
+      const { res: syncRes, data: syncData } = await fetchJson<{
+        ok?: boolean;
+        isDeveloper?: boolean;
+        profile?: RankedProfile;
+      }>(
+        getApiUrl('/api/dev/sync-privileges'),
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${cleanedToken}`,
+          },
+          body: JSON.stringify({}),
+        },
+        'Failed to synchronize developer privileges.',
+      );
+
+      if (
+        syncRes.ok &&
+        syncData?.isDeveloper === true &&
+        syncData.profile &&
+        syncData.profile.isDeveloper === true
+      ) {
+        return {
+          verifiedDeveloper: true,
+          reachable: true,
+          profile: syncData.profile,
+        };
+      }
+
+      if (syncRes.status === 403 || syncRes.status === 401) {
+        return { verifiedDeveloper: false, reachable: true };
+      }
+    } catch {
+      // Status check already succeeded on verified backend; keep verifiedDeveloper true without synthetic profile override
+    }
+
+    return { verifiedDeveloper: true, reachable: true };
+  } catch (err) {
+    return {
+      verifiedDeveloper: false,
+      reachable: !isBackendReachabilityError(err),
+    };
+  }
+}

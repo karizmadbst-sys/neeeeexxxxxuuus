@@ -7,10 +7,13 @@ import { getApp, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth, type DecodedIdToken } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import {
+  getCatalogItemPriceMap,
   isAuthorizedDeveloperAccount,
 } from './server/DeveloperPrivileges.ts';
+import { GlbAssetStore } from './server/GlbAssetStore.ts';
 import { RankedMatchServer } from './server/RankedMatchServer.ts';
 import { normalizeNexusUsername, RankedStore } from './server/RankedStore.ts';
+import { NEXUS_SHOP_CATALOG } from './src/shop/IShopSystem.ts';
 
 function loadFirebaseConfig(): {
   projectId?: string;
@@ -99,6 +102,7 @@ async function verifyRawFirebaseToken(token: string): Promise<DecodedIdToken | n
 
 async function extractBearerStatus(
   req: express.Request,
+  tokenVerifier: (token: string) => Promise<DecodedIdToken | null> = decodeFirebaseToken,
 ): Promise<
   | { ok: true; decoded: DecodedIdToken }
   | { ok: false; status: number; code: string; error: string }
@@ -112,7 +116,7 @@ async function extractBearerStatus(
       error: 'Missing Firebase authorization header.',
     };
   }
-  const decoded = await decodeFirebaseToken(authHeader.slice(7));
+  const decoded = await tokenVerifier(authHeader.slice(7));
   if (!decoded) {
     return {
       ok: false,
@@ -134,11 +138,12 @@ async function extractBearerStatus(
 
 async function requireVerifiedDeveloper(
   req: express.Request,
+  tokenVerifier: (token: string) => Promise<DecodedIdToken | null> = decodeFirebaseToken,
 ): Promise<
   | { ok: true; decoded: DecodedIdToken }
   | { ok: false; status: number; code: string; error: string }
 > {
-  const authResult = await extractBearerStatus(req);
+  const authResult = await extractBearerStatus(req, tokenVerifier);
   if (!authResult.ok) {
     return authResult;
   }
@@ -296,8 +301,11 @@ function applyApiCorsHeaders(
   if (origin && isAllowedNativeOrAppOrigin(origin, reqHost, allowedCorsOrigins)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, Accept, X-Nexus-Player-Id, X-Nexus-Player-Token',
+    );
     res.setHeader('Access-Control-Max-Age', '86400');
   }
 }
@@ -321,10 +329,12 @@ export async function createAppServer(options?: {
   port?: number;
   storePath?: string;
   skipVite?: boolean;
+  verifyFirebaseTokenForTest?: (token: string) => Promise<DecodedIdToken | null>;
 }) {
   const app = express();
   const allowedCorsOrigins = buildAllowedCorsOrigins();
   const authRateLimit = createAuthRateLimiter(30);
+  const tokenVerifier = options?.verifyFirebaseTokenForTest ?? decodeFirebaseToken;
 
   app.use('/api', (req, res, next) => {
     applyApiCorsHeaders(req, res, allowedCorsOrigins);
@@ -335,18 +345,72 @@ export async function createAppServer(options?: {
     next();
   });
 
+  // Allow larger base64 GLB uploads strictly on developer GLB routes while keeping 1MB cap everywhere else
+  app.use('/api/dev/glb', express.json({ limit: '24mb' }));
   app.use('/api', express.json({ limit: '1mb' }));
 
   const store = new RankedStore(options?.storePath);
   await store.init();
+  const glbStore = new GlbAssetStore({
+    storeFilePath: store.getStoreFilePath(),
+    pgDb: store.getPostgresDatabase(),
+  });
+  await glbStore.initFromPostgresIfAvailable();
+  store.setGlbCatalogProviders({
+    getPublishedPrices: () => glbStore.getPublishedPriceMap(),
+    getAllIds: () => glbStore.getAllAssetIds(),
+  });
+
   const matchServer = new RankedMatchServer(store, {
     firebaseProjectId,
     firestoreDatabaseId,
     verifyFirebaseToken: async (token: string) => {
-      const decoded = await verifyRawFirebaseToken(token);
-      return decoded ? { uid: decoded.uid } : null;
+      const decoded = await tokenVerifier(token);
+      return decoded && decoded.email_verified === true ? { uid: decoded.uid } : null;
     },
   });
+
+  const resolveViewerContext = async (
+    req: express.Request,
+  ): Promise<{ isDeveloper: boolean; ownedIds: Set<string>; firebaseUid?: string }> => {
+    let isDeveloper = false;
+    let firebaseUid: string | undefined;
+    const ownedIds = new Set<string>();
+
+    const authHeader = req.headers.authorization;
+    if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+      const authRes = await extractBearerStatus(req, tokenVerifier);
+      if (authRes.ok) {
+        firebaseUid = authRes.decoded.uid;
+        isDeveloper = isAuthorizedDeveloperAccount({
+          firebaseUid: authRes.decoded.uid,
+          projectId: firebaseProjectId,
+          aud: authRes.decoded.aud,
+          emailVerified: authRes.decoded.email_verified,
+        });
+        for (const id of store.getPlayerOwnedIdsByFirebaseUid(authRes.decoded.uid)) {
+          ownedIds.add(id);
+        }
+      }
+    }
+
+    const headerPid =
+      typeof req.headers['x-nexus-player-id'] === 'string'
+        ? req.headers['x-nexus-player-id'].trim()
+        : '';
+    const headerSecret =
+      typeof req.headers['x-nexus-player-token'] === 'string'
+        ? req.headers['x-nexus-player-token'].trim()
+        : '';
+    if (headerPid && headerSecret) {
+      const ids = store.getPlayerOwnedIdsByCredentials(headerPid, headerSecret);
+      if (ids) {
+        for (const id of ids) ownedIds.add(id);
+      }
+    }
+
+    return { isDeveloper, ownedIds, firebaseUid };
+  };
 
   app.get(
     '/api/health',
@@ -398,7 +462,7 @@ export async function createAppServer(options?: {
         res.status(401).json({ error: 'Missing Firebase authorization token.', code: 'UNAUTHORIZED' });
         return;
       }
-      const decoded = await decodeFirebaseToken(authHeader.slice(7));
+      const decoded = await tokenVerifier(authHeader.slice(7));
       if (!decoded || typeof decoded.email !== 'string' || !decoded.email.includes('@')) {
         res.status(401).json({ error: 'Invalid Firebase account token.', code: 'UNAUTHORIZED' });
         return;
@@ -564,7 +628,7 @@ export async function createAppServer(options?: {
   app.get(
     '/api/auth/developer-status',
     asyncHandler(async (req, res) => {
-      const authResult = await extractBearerStatus(req);
+      const authResult = await extractBearerStatus(req, tokenVerifier);
       if (!authResult.ok) {
         res.status(authResult.status).json({ error: authResult.error, code: authResult.code });
         return;
@@ -588,7 +652,7 @@ export async function createAppServer(options?: {
   app.post(
     '/api/dev/sync-privileges',
     asyncHandler(async (req, res) => {
-      const devAuth = await requireVerifiedDeveloper(req);
+      const devAuth = await requireVerifiedDeveloper(req, tokenVerifier);
       if (!devAuth.ok) {
         res.status(devAuth.status).json({ error: devAuth.error, code: devAuth.code });
         return;
@@ -614,7 +678,7 @@ export async function createAppServer(options?: {
   app.post(
     '/api/firebase/session',
     asyncHandler(async (req, res) => {
-      const authResult = await extractBearerStatus(req);
+      const authResult = await extractBearerStatus(req, tokenVerifier);
       if (!authResult.ok) {
         res.status(authResult.status).json({ error: authResult.error, code: authResult.code });
         return;
@@ -673,7 +737,7 @@ export async function createAppServer(options?: {
   app.post(
     '/api/firebase/sync-cloud',
     asyncHandler(async (req, res) => {
-      const authResult = await extractBearerStatus(req);
+      const authResult = await extractBearerStatus(req, tokenVerifier);
       if (!authResult.ok) {
         res.status(authResult.status).json({ error: authResult.error, code: authResult.code });
         return;
@@ -993,7 +1057,7 @@ export async function createAppServer(options?: {
     }
     const authHeader = req.headers.authorization;
     if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-      const authRes = await extractBearerStatus(req);
+      const authRes = await extractBearerStatus(req, tokenVerifier);
       if (authRes.ok) {
         const mappedPid = store.getPlayerIdByFirebaseUid(authRes.decoded.uid);
         if (mappedPid) {
@@ -1128,7 +1192,7 @@ export async function createAppServer(options?: {
   app.post(
     '/api/mailbox/send',
     asyncHandler(async (req, res) => {
-      const devAuth = await requireVerifiedDeveloper(req);
+      const devAuth = await requireVerifiedDeveloper(req, tokenVerifier);
       if (!devAuth.ok) {
         res.status(devAuth.status).json({ error: devAuth.error, code: devAuth.code });
         return;
@@ -1149,6 +1213,279 @@ export async function createAppServer(options?: {
       await store.flushToDisk();
       matchServer.notifyMailboxUpdated(outcome.targetPlayerIds);
       res.json({ ok: true, mail: outcome.mail });
+    }),
+  );
+
+  // --- Store & GLB Import / Developer Management API ---
+
+  app.get(
+    '/api/store/glb/catalog',
+    asyncHandler(async (req, res) => {
+      const viewer = await resolveViewerContext(req);
+      const assets = glbStore.listCatalogForPlayer({
+        isDeveloper: viewer.isDeveloper,
+        ownedIds: viewer.ownedIds,
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ ok: true, assets });
+    }),
+  );
+
+  app.get(
+    '/api/store/glb/assets/:id/model',
+    asyncHandler(async (req, res) => {
+      const id = String(req.params.id || '').trim();
+      const viewer = await resolveViewerContext(req);
+      if (!glbStore.canAccessAssetBinary(id, viewer)) {
+        res.status(403).json({
+          ok: false,
+          error: 'GLB asset is unpublished or not accessible.',
+          code: 'GLB_ASSET_FORBIDDEN',
+        });
+        return;
+      }
+      const binary = glbStore.readModelBinary(id);
+      if (!binary) {
+        res.status(404).json({ ok: false, error: 'GLB binary not found.', code: 'ASSET_NOT_FOUND' });
+        return;
+      }
+      res.setHeader('Content-Type', 'model/gltf-binary');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      res.send(binary);
+    }),
+  );
+
+  app.get(
+    '/api/store/glb/assets/:id/preview',
+    asyncHandler(async (req, res) => {
+      const id = String(req.params.id || '').trim();
+      const viewer = await resolveViewerContext(req);
+      if (!glbStore.canAccessAssetBinary(id, viewer)) {
+        res.status(403).json({
+          ok: false,
+          error: 'GLB preview is unpublished or not accessible.',
+          code: 'GLB_PREVIEW_FORBIDDEN',
+        });
+        return;
+      }
+      const preview = glbStore.readPreviewBinary(id);
+      if (!preview) {
+        res.status(404).json({ ok: false, error: 'Preview image not found.', code: 'PREVIEW_NOT_FOUND' });
+        return;
+      }
+      res.setHeader('Content-Type', preview.mimeType);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      res.send(preview.buffer);
+    }),
+  );
+
+  app.post(
+    '/api/shop/purchase',
+    asyncHandler(async (req, res) => {
+      const body = readBodyObject(req);
+      const itemId = typeof body.itemId === 'string' ? body.itemId.trim() : '';
+      if (!itemId) {
+        res.status(400).json({ ok: false, error: 'itemId is required.', code: 'MISSING_ITEM_ID' });
+        return;
+      }
+
+      let firebaseUid: string | undefined;
+      const authHeader = req.headers.authorization;
+      if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+        const authRes = await extractBearerStatus(req, tokenVerifier);
+        if (!authRes.ok) {
+          res.status(authRes.status).json({ ok: false, error: authRes.error, code: authRes.code });
+          return;
+        }
+        firebaseUid = authRes.decoded.uid;
+      }
+
+      const playerId = typeof body.playerId === 'string' ? body.playerId.trim() : '';
+      const secretToken = typeof body.secretToken === 'string' ? body.secretToken.trim() : '';
+
+      const staticPrice = getCatalogItemPriceMap().get(itemId);
+      const staticItem = staticPrice
+        ? NEXUS_SHOP_CATALOG.find((i) => i.id === itemId)
+        : undefined;
+      const glbAsset = !staticItem ? glbStore.getAsset(itemId) : null;
+
+      if (!staticItem && !glbAsset) {
+        res.status(404).json({ ok: false, error: 'Store item not found.', code: 'ITEM_NOT_FOUND' });
+        return;
+      }
+
+      const priceCredits = staticItem ? staticItem.priceCredits : glbAsset!.priceCredits;
+      const isAvailable = staticItem ? true : glbAsset!.status === 'published';
+
+      const outcome = await store.purchaseStoreItemAsync({
+        playerId,
+        secretToken,
+        firebaseUid,
+        itemId,
+        priceCredits,
+        isAvailable,
+      });
+
+      if (!outcome.ok) {
+        res.status(outcome.status).json({
+          ok: false,
+          error: outcome.error,
+          code: outcome.code,
+        });
+        return;
+      }
+
+      await store.flushToDisk();
+      res.json({
+        ok: true,
+        itemId,
+        credits: outcome.vault.credits,
+        vault: outcome.vault,
+        profile: outcome.profile,
+      });
+    }),
+  );
+
+  app.get(
+    '/api/dev/glb/assets',
+    asyncHandler(async (req, res) => {
+      const devAuth = await requireVerifiedDeveloper(req, tokenVerifier);
+      if (!devAuth.ok) {
+        res.status(devAuth.status).json({ ok: false, error: devAuth.error, code: devAuth.code });
+        return;
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ ok: true, assets: glbStore.listAllForDeveloper() });
+    }),
+  );
+
+  app.post(
+    '/api/dev/glb/import',
+    asyncHandler(async (req, res) => {
+      const devAuth = await requireVerifiedDeveloper(req, tokenVerifier);
+      if (!devAuth.ok) {
+        res.status(devAuth.status).json({ ok: false, error: devAuth.error, code: devAuth.code });
+        return;
+      }
+      const body = readBodyObject(req);
+      const outcome = await glbStore.importAsset({
+        glbBase64: typeof body.glbBase64 === 'string' ? body.glbBase64 : '',
+        originalFileName: typeof body.originalFileName === 'string' ? body.originalFileName : undefined,
+        name: typeof body.name === 'string' ? body.name : '',
+        description: typeof body.description === 'string' ? body.description : undefined,
+        assetType:
+          body.assetType === 'character' || body.assetType === 'skin' || body.assetType === 'cosmetic'
+            ? body.assetType
+            : 'cosmetic',
+        equipSlot: typeof body.equipSlot === 'string' ? (body.equipSlot as never) : undefined,
+        rarity: typeof body.rarity === 'string' ? (body.rarity as never) : undefined,
+        priceCredits: typeof body.priceCredits === 'number' ? body.priceCredits : undefined,
+        accentHex: typeof body.accentHex === 'string' ? body.accentHex : undefined,
+        scaleMultiplier: typeof body.scaleMultiplier === 'number' ? body.scaleMultiplier : undefined,
+        previewImageDataUrl:
+          typeof body.previewImageDataUrl === 'string' ? body.previewImageDataUrl : null,
+        publishImmediately: Boolean(body.publishImmediately),
+        createdByUid: devAuth.decoded.uid,
+      });
+      if (!outcome.ok) {
+        res.status(outcome.status).json({
+          ok: false,
+          error: outcome.error,
+          code: outcome.code,
+          existingAsset: outcome.existingAsset,
+        });
+        return;
+      }
+      await store.reconcileVerifiedDeveloperSessionAsync(devAuth.decoded.uid);
+      res.status(201).json({ ok: true, asset: outcome.asset });
+    }),
+  );
+
+  app.post(
+    '/api/dev/glb/assets/:id/update',
+    asyncHandler(async (req, res) => {
+      const devAuth = await requireVerifiedDeveloper(req, tokenVerifier);
+      if (!devAuth.ok) {
+        res.status(devAuth.status).json({ ok: false, error: devAuth.error, code: devAuth.code });
+        return;
+      }
+      const body = readBodyObject(req);
+      const outcome = await glbStore.updateAsset(String(req.params.id || '').trim(), {
+        name: typeof body.name === 'string' ? body.name : undefined,
+        description: typeof body.description === 'string' ? body.description : undefined,
+        assetType:
+          body.assetType === 'character' || body.assetType === 'skin' || body.assetType === 'cosmetic'
+            ? body.assetType
+            : undefined,
+        equipSlot: typeof body.equipSlot === 'string' ? (body.equipSlot as never) : undefined,
+        rarity: typeof body.rarity === 'string' ? (body.rarity as never) : undefined,
+        priceCredits: typeof body.priceCredits === 'number' ? body.priceCredits : undefined,
+        accentHex: typeof body.accentHex === 'string' ? body.accentHex : undefined,
+        scaleMultiplier: typeof body.scaleMultiplier === 'number' ? body.scaleMultiplier : undefined,
+        previewImageDataUrl:
+          typeof body.previewImageDataUrl === 'string' ? body.previewImageDataUrl : undefined,
+        clearPreviewImage: Boolean(body.clearPreviewImage),
+      });
+      if (!outcome.ok) {
+        res.status(outcome.status).json({ ok: false, error: outcome.error, code: outcome.code });
+        return;
+      }
+      res.json({ ok: true, asset: outcome.asset });
+    }),
+  );
+
+  app.post(
+    '/api/dev/glb/assets/:id/publish',
+    asyncHandler(async (req, res) => {
+      const devAuth = await requireVerifiedDeveloper(req, tokenVerifier);
+      if (!devAuth.ok) {
+        res.status(devAuth.status).json({ ok: false, error: devAuth.error, code: devAuth.code });
+        return;
+      }
+      const body = readBodyObject(req);
+      const published = typeof body.published === 'boolean' ? body.published : true;
+      const outcome = await glbStore.setPublished(String(req.params.id || '').trim(), published);
+      if (!outcome.ok) {
+        res.status(outcome.status).json({ ok: false, error: outcome.error, code: outcome.code });
+        return;
+      }
+      res.json({ ok: true, asset: outcome.asset });
+    }),
+  );
+
+  app.delete(
+    '/api/dev/glb/assets/:id',
+    asyncHandler(async (req, res) => {
+      const devAuth = await requireVerifiedDeveloper(req, tokenVerifier);
+      if (!devAuth.ok) {
+        res.status(devAuth.status).json({ ok: false, error: devAuth.error, code: devAuth.code });
+        return;
+      }
+      const outcome = await glbStore.deleteAsset(String(req.params.id || '').trim());
+      if (!outcome.ok) {
+        res.status(outcome.status).json({ ok: false, error: outcome.error, code: outcome.code });
+        return;
+      }
+      res.json({ ok: true, deletedId: outcome.asset.id });
+    }),
+  );
+
+  app.post(
+    '/api/dev/glb/assets/:id/delete',
+    asyncHandler(async (req, res) => {
+      const devAuth = await requireVerifiedDeveloper(req, tokenVerifier);
+      if (!devAuth.ok) {
+        res.status(devAuth.status).json({ ok: false, error: devAuth.error, code: devAuth.code });
+        return;
+      }
+      const outcome = await glbStore.deleteAsset(String(req.params.id || '').trim());
+      if (!outcome.ok) {
+        res.status(outcome.status).json({ ok: false, error: outcome.error, code: outcome.code });
+        return;
+      }
+      res.json({ ok: true, deletedId: outcome.asset.id });
     }),
   );
 
@@ -1326,6 +1663,7 @@ export { ErrorOverlay, createHotContext, injectQuery, removeStyle, updateStyle }
     app,
     httpServer,
     store,
+    glbStore,
     matchServer,
     close: async () => {
       matchServer.dispose();

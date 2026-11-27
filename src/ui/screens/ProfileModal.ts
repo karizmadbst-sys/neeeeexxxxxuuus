@@ -35,6 +35,7 @@ export interface ProfileModalCallbacks {
   onEquipBanner: (bannerId: string) => ShopActionResult;
   onOpenShopTab: (tab: ShopBrowseTab) => void;
   onOpenCharacters: () => void;
+  onOpenGlbImport?: () => void;
   onSignOut?: () => Promise<void> | void;
   onClose: () => void;
 }
@@ -88,6 +89,7 @@ export class ProfileModal {
   private i18nUnsubscribe: (() => void) | null = null;
 
   private snapshot: PlayerAccountSnapshot;
+  private isDeveloperVerified = false;
   private equippedCharacter: CharacterDefinition;
   private customization: R6Customization;
   private shopSnapshot: ShopSnapshot;
@@ -273,6 +275,15 @@ export class ProfileModal {
       if (this.isOpen) {
         this.render();
       }
+    }
+  }
+
+  setDeveloperAccess(isVerifiedDeveloper: boolean): void {
+    const next = Boolean(isVerifiedDeveloper);
+    if (this.isDeveloperVerified === next) return;
+    this.isDeveloperVerified = next;
+    if (this.isOpen && !this.remoteProfile) {
+      this.render();
     }
   }
 
@@ -759,11 +770,16 @@ export class ProfileModal {
                       ${this.escapeHtml(v.username)}
                     </h3>
                     ${
-                      v.isDeveloper && v.isOwn && !this.remoteProfile
+                      v.isDeveloper && this.isDeveloperVerified && v.isOwn && !this.remoteProfile
                         ? `<span
                             data-profile-role="developer-badge"
                             class="inline-flex items-center px-2 py-0.5 rounded border border-amber-400/80 bg-amber-500/20 text-amber-200 text-[10px] font-black tracking-widest uppercase shrink-0"
-                          >CREATOR · DEV</span>`
+                          >CREATOR · DEV</span>
+                          <button
+                            type="button"
+                            data-profile-action="open-glb-import"
+                            class="inline-flex items-center px-2.5 py-0.5 rounded border border-amber-300/85 bg-amber-500/25 hover:bg-amber-500/40 text-amber-100 text-[10px] font-black tracking-widest uppercase shrink-0 min-h-[26px] transition-colors"
+                          >${this.escapeHtml(i18n.t('shop.tab.glb-import'))}</button>`
                         : ''
                     }
                     ${this.renderGenderIconHtml(v.gender)}
@@ -990,6 +1006,14 @@ export class ProfileModal {
         );
         inputEl?.focus();
         inputEl?.select();
+      });
+
+    this.cardContainerEl
+      .querySelector('[data-profile-action="open-glb-import"]')
+      ?.addEventListener('click', () => {
+        if (!this.isDeveloperVerified || !this.snapshot.isDeveloper || this.remoteProfile) return;
+        this.close();
+        this.callbacks.onOpenGlbImport?.();
       });
 
     this.cardContainerEl

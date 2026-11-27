@@ -2355,6 +2355,7 @@ export class I18nManager {
       Backpacks: 'lootCat.backpack',
       Scopes: 'lootCat.scope',
       Gliders: 'shop.tab.gliders',
+      Characters: 'shop.tab.characters',
       Outfits: 'shop.tab.outfits',
       Shirts: 'shop.sub.shirts',
       Pants: 'shop.sub.pants',

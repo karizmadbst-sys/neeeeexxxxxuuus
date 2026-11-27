@@ -3,6 +3,7 @@ import { EMOTE_CATALOG } from '../emotes/EmoteCatalog.ts';
 import type { R6Customization } from '../player/R6CustomizationData.ts';
 import { WEAPON_BY_ID } from '../weapons/WeaponData.ts';
 import { WEAPON_SKIN_CATALOG } from '../weapons/WeaponSkins.ts';
+import type { GlbCatalogItemMeta } from './GlbAssetTypes.ts';
 import {
   AVATAR_CATALOG,
   BANNER_CATALOG,
@@ -11,6 +12,7 @@ import {
 } from './AvatarBannerCatalog.ts';
 
 export type ShopCategory =
+  | 'characters'
   | 'featured'
   | 'outfits'
   | 'clothing'
@@ -23,11 +25,14 @@ export type ShopCategory =
   | 'avatars'
   | 'banners'
   | 'armor'
+  | 'helmets'
+  | 'accessories'
   | 'equipment'
   | 'tools';
 
 export type ShopBrowseTab =
   | 'all'
+  | 'characters'
   | 'clothing'
   | 'gloo-walls'
   | 'weapons'
@@ -37,7 +42,8 @@ export type ShopBrowseTab =
   | 'armor'
   | 'equipment'
   | 'dances'
-  | 'tools';
+  | 'tools'
+  | 'glb-import';
 
 export type ShopWeaponSubCategory =
   | 'Rifles'
@@ -90,6 +96,7 @@ export interface ShopCatalogItem {
   bannerId?: string;
   imageUrl?: string;
   specs?: readonly ShopItemSpec[];
+  glbAsset?: GlbCatalogItemMeta;
 }
 
 export interface ShopSnapshot {
@@ -131,9 +138,12 @@ export { DEFAULT_AVATAR_ID, DEFAULT_BANNER_ID };
 
 export function mapShopCategoryToBrowseTab(category: ShopCategory): ShopBrowseTab {
   switch (category) {
+    case 'characters':
+      return 'characters';
     case 'clothing':
     case 'outfits':
     case 'featured':
+    case 'accessories':
       return 'clothing';
     case 'gloo-walls':
       return 'gloo-walls';
@@ -146,6 +156,7 @@ export function mapShopCategoryToBrowseTab(category: ShopCategory): ShopBrowseTa
     case 'banners':
       return 'banners';
     case 'armor':
+    case 'helmets':
       return 'armor';
     case 'equipment':
     case 'gliders':

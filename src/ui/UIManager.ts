@@ -136,13 +136,14 @@ export interface UIManagerCallbacks {
   canAccessGameScreens?: () => boolean;
   canAccessLoginLoadingScreen?: () => boolean;
   onSelectShopPreview: (item: ShopCatalogItem) => void;
-  onPurchaseShopItem: (item: ShopCatalogItem) => ShopActionResult;
+  onPurchaseShopItem: (item: ShopCatalogItem) => ShopActionResult | Promise<ShopActionResult>;
   onEquipShopItem: (item: ShopCatalogItem) => ShopActionResult;
   onUnequipShopItem: (item: ShopCatalogItem) => ShopActionResult;
   onEquipAvatar: (avatarId: string) => ShopActionResult;
   onEquipBanner: (bannerId: string) => ShopActionResult;
   onEquipEmoteSlot: (item: ShopCatalogItem, slotIndex: number) => ShopActionResult;
   onUnequipEmoteSlot: (slotIndex: number) => ShopActionResult;
+  onRefreshGlbCatalog?: () => Promise<void>;
   onRequestOpenEmoteWheel: () => void;
   onPlayEmote: (emoteId: string) => void;
   onStopEmote: () => void;
@@ -207,6 +208,7 @@ export class UIManager implements Subsystem {
   private readonly orientationGuard: OrientationGuard;
   private latestPlayerUsername = 'OPERATOR';
   private latestEquippedAvatarId = 'avatar-nexus-recruit';
+  private isDeveloperVerified = false;
 
   private readonly screenMap: Record<ScreenId, HTMLElement>;
 
@@ -325,6 +327,10 @@ export class UIManager implements Subsystem {
           this.characterSelectionUI.openStudio('fighter');
           this.showScreen('characters');
         },
+        onOpenGlbImport: () => {
+          this.audioManager.playClick();
+          this.openGlbImportStudio();
+        },
         onSignOut: async () => {
           this.audioManager.playBack();
           await this.callbacks.onSignOutNexusId?.();
@@ -358,6 +364,10 @@ export class UIManager implements Subsystem {
             this.petsScreen.openScreen(this.latestCustomization);
           }
           this.showScreen(target);
+        },
+        onOpenGlbImport: () => {
+          this.audioManager.playClick();
+          this.openGlbImportStudio();
         },
         onOpenProfile: () => {
           this.audioManager.playClick();
@@ -618,6 +628,9 @@ export class UIManager implements Subsystem {
         },
         onPreviewGlooWall: () => {
           this.audioManager.playGlooDeploy(0);
+        },
+        onRefreshGlbCatalog: async () => {
+          await this.callbacks.onRefreshGlbCatalog?.();
         },
         onOpenVault: () => {
           this.audioManager.playClick();
@@ -934,6 +947,26 @@ export class UIManager implements Subsystem {
       this.latestPlayerUsername,
       this.latestEquippedAvatarId,
     );
+  }
+
+  setDeveloperAccess(isVerifiedDeveloper: boolean): void {
+    const next = Boolean(isVerifiedDeveloper);
+    this.isDeveloperVerified = next;
+    this.shopScreen.setDeveloperAccess(next);
+    this.mainMenuScreen.setDeveloperAccess(next);
+    this.profileModal.setDeveloperAccess(next);
+  }
+
+  openGlbImportStudio(): void {
+    if (!this.isDeveloperVerified) return;
+    if (this.currentScreen === 'test-arena') return;
+    this.showScreen('shop');
+    this.shopScreen.openScreen('glb-import');
+  }
+
+  updateShopCatalog(items: readonly ShopCatalogItem[]): void {
+    this.shopScreen.setCatalog(items);
+    this.vaultScreen.setCatalog(items);
   }
 
   showScreen(screen: ScreenId, notify = true): void {

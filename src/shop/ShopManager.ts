@@ -21,6 +21,10 @@ import {
   isValidBannerId,
 } from './AvatarBannerCatalog';
 import {
+  getGlbArmoryCategoryKey,
+  isGlbItemId,
+} from './GlbAssetTypes';
+import {
   DEFAULT_EMOTE_ID,
   DEFAULT_GLIDER_ID,
   DEFAULT_GLOO_WALL_SHOP_ID,
@@ -83,16 +87,58 @@ export class ShopManager implements IShopService, Subsystem {
   private currentCustomization: R6Customization = { ...DEFAULT_R6_CUSTOMIZATION };
   private readonly listeners = new Set<ShopChangeListener>();
   private readonly catalogById = new Map<string, ShopCatalogItem>();
+  private dynamicGlbItems: ShopCatalogItem[] = [];
 
   constructor() {
+    this.rebuildCatalogIndex();
+    this.state = this.load();
+  }
+
+  private rebuildCatalogIndex(): void {
+    this.catalogById.clear();
     for (const item of NEXUS_SHOP_CATALOG) {
       this.catalogById.set(item.id, item);
     }
-    this.state = this.load();
+    for (const item of this.dynamicGlbItems) {
+      this.catalogById.set(item.id, item);
+    }
+  }
+
+  setDynamicGlbItems(items: readonly ShopCatalogItem[]): void {
+    this.dynamicGlbItems = items.map((item) => ({ ...item }));
+    this.rebuildCatalogIndex();
+    if (this.developerMode) {
+      let changed = false;
+      for (const item of this.dynamicGlbItems) {
+        if (!this.state.ownedIds.includes(item.id)) {
+          this.state.ownedIds.push(item.id);
+          changed = true;
+        }
+      }
+      if (changed) this.save();
+    }
+    this.emit();
+  }
+
+  getDynamicGlbItems(): readonly ShopCatalogItem[] {
+    return this.dynamicGlbItems;
   }
 
   setDeveloperMode(enabled: boolean): void {
     this.developerMode = Boolean(enabled);
+    if (this.developerMode && this.dynamicGlbItems.length > 0) {
+      let changed = false;
+      for (const item of this.dynamicGlbItems) {
+        if (!this.state.ownedIds.includes(item.id)) {
+          this.state.ownedIds.push(item.id);
+          changed = true;
+        }
+      }
+      if (changed) {
+        this.save();
+        this.emit();
+      }
+    }
   }
 
   isDeveloperMode(): boolean {
@@ -100,7 +146,9 @@ export class ShopManager implements IShopService, Subsystem {
   }
 
   getCatalog(): readonly ShopCatalogItem[] {
-    return NEXUS_SHOP_CATALOG;
+    return this.dynamicGlbItems.length > 0
+      ? [...NEXUS_SHOP_CATALOG, ...this.dynamicGlbItems]
+      : NEXUS_SHOP_CATALOG;
   }
 
   getItemById(id: string): ShopCatalogItem | undefined {
@@ -118,6 +166,7 @@ export class ShopManager implements IShopService, Subsystem {
   isOwned(itemId: string): boolean {
     const item = this.catalogById.get(itemId);
     if (item?.defaultOwned) return true;
+    if (this.developerMode && item?.glbAsset) return true;
     return this.state.ownedIds.includes(itemId);
   }
 
@@ -207,6 +256,34 @@ export class ShopManager implements IShopService, Subsystem {
     return item?.glooSkinId ?? DEFAULT_GLOO_SKIN_ID;
   }
 
+  getEquippedGlbLoadout(): {
+    character: ShopCatalogItem | null;
+    outfit: ShopCatalogItem | null;
+    backpack: ShopCatalogItem | null;
+    helmet: ShopCatalogItem | null;
+    armor: ShopCatalogItem | null;
+    accessory: ShopCatalogItem | null;
+    weapon: ShopCatalogItem | null;
+    glider: ShopCatalogItem | null;
+  } {
+    const resolveGlb = (id: string | null | undefined, slot: string): ShopCatalogItem | null => {
+      if (!id) return null;
+      const item = this.catalogById.get(id);
+      if (!item?.glbAsset || item.glbAsset.equipSlot !== slot) return null;
+      return this.isOwned(item.id) ? item : null;
+    };
+    return {
+      character: resolveGlb(this.state.equippedArmoryIds.characters, 'character'),
+      outfit: resolveGlb(this.state.equippedOutfitId, 'outfit'),
+      backpack: resolveGlb(this.state.equippedArmoryIds.equipment, 'backpack'),
+      helmet: resolveGlb(this.state.equippedArmoryIds.helmets, 'helmet'),
+      armor: resolveGlb(this.state.equippedArmoryIds.armor, 'armor'),
+      accessory: resolveGlb(this.state.equippedArmoryIds.accessories, 'accessory'),
+      weapon: resolveGlb(this.state.equippedArmoryIds.weapons, 'weapon'),
+      glider: resolveGlb(this.state.equippedGliderId, 'glider'),
+    };
+  }
+
   getSnapshot(): ShopSnapshot {
     return {
       credits: this.state.credits,
@@ -251,7 +328,11 @@ export class ShopManager implements IShopService, Subsystem {
     }
     if (Array.isArray(serverVault.ownedIds)) {
       for (const id of serverVault.ownedIds) {
-        if (typeof id === 'string' && this.catalogById.has(id) && !mergedOwned.has(id)) {
+        if (
+          typeof id === 'string' &&
+          (this.catalogById.has(id) || isGlbItemId(id)) &&
+          !mergedOwned.has(id)
+        ) {
           mergedOwned.add(id);
           changed = true;
         }
@@ -323,6 +404,8 @@ export class ShopManager implements IShopService, Subsystem {
             const catItem = this.catalogById.get(id);
             if (catItem && catItem.category === cat && (catItem.defaultOwned || mergedOwned.has(id))) {
               nextArmory[cat as ShopCategory] = id;
+            } else if (!catItem && isGlbItemId(id) && mergedOwned.has(id)) {
+              nextArmory[cat as ShopCategory] = id;
             }
           }
         }
@@ -343,7 +426,7 @@ export class ShopManager implements IShopService, Subsystem {
     const ownedSet = new Set<string>(defaultOwned);
     if (Array.isArray(cloudVault.ownedIds)) {
       for (const id of cloudVault.ownedIds) {
-        if (typeof id === 'string' && this.catalogById.has(id)) {
+        if (typeof id === 'string' && (this.catalogById.has(id) || isGlbItemId(id))) {
           ownedSet.add(id);
         }
       }
@@ -396,6 +479,8 @@ export class ShopManager implements IShopService, Subsystem {
         if (typeof id === 'string') {
           const catItem = this.catalogById.get(id);
           if (catItem && catItem.category === cat && (catItem.defaultOwned || ownedSet.has(id))) {
+            equippedArmoryIds[cat as ShopCategory] = id;
+          } else if (!catItem && isGlbItemId(id) && ownedSet.has(id)) {
             equippedArmoryIds[cat as ShopCategory] = id;
           }
         }
@@ -514,6 +599,41 @@ export class ShopManager implements IShopService, Subsystem {
     };
   }
 
+  applyAuthoritativePurchase(
+    itemId: string,
+    newCredits?: number,
+    serverOwnedIds?: readonly string[],
+  ): ShopActionResult {
+    const item = this.catalogById.get(itemId);
+    const localized = item
+      ? i18n.translateShopItem(item.id, item.name, item.description, item.lootId)
+      : { name: itemId, desc: '' };
+
+    if (!this.state.ownedIds.includes(itemId)) {
+      this.state.ownedIds.push(itemId);
+    }
+    if (Array.isArray(serverOwnedIds)) {
+      for (const id of serverOwnedIds) {
+        if (typeof id === 'string' && !this.state.ownedIds.includes(id)) {
+          this.state.ownedIds.push(id);
+        }
+      }
+    }
+    if (typeof newCredits === 'number' && Number.isFinite(newCredits) && newCredits >= 0) {
+      this.state.credits = this.developerMode ? 1_000_000 : Math.floor(newCredits);
+    }
+    this.save();
+    this.emit();
+    return {
+      ok: true,
+      message: i18n.t('shop.msg.purchasedToVault', {
+        name: localized.name,
+        price: (item?.priceCredits ?? 0).toLocaleString(),
+      }),
+      item,
+    };
+  }
+
   equip(itemId: string): ShopActionResult {
     const item = this.catalogById.get(itemId);
     if (!item) {
@@ -547,6 +667,31 @@ export class ShopManager implements IShopService, Subsystem {
       return {
         ok: false,
         message: i18n.t('shop.msg.purchaseFirst', { name: localized.name }),
+        item,
+      };
+    }
+
+    if (item.glbAsset) {
+      const slot = item.glbAsset.equipSlot;
+      if (slot === 'outfit') {
+        if (this.state.equippedOutfitId === item.id) this.state.equippedOutfitId = null;
+      } else if (slot === 'glider') {
+        if (this.state.equippedGliderId === item.id) this.state.equippedGliderId = DEFAULT_GLIDER_ID;
+      } else if (slot === 'gloo-wall') {
+        if (this.state.equippedGlooSkinId === item.id) {
+          this.state.equippedGlooSkinId = DEFAULT_GLOO_WALL_SHOP_ID;
+        }
+      } else {
+        const armoryKey = getGlbArmoryCategoryKey(slot) ?? item.category;
+        if (this.state.equippedArmoryIds[armoryKey] === item.id) {
+          delete this.state.equippedArmoryIds[armoryKey];
+        }
+      }
+      this.save();
+      this.emit();
+      return {
+        ok: true,
+        message: i18n.t('shop.msg.unequipped', { name: localized.name }),
         item,
       };
     }
@@ -705,6 +850,20 @@ export class ShopManager implements IShopService, Subsystem {
   }
 
   private applyEquip(item: ShopCatalogItem): void {
+    if (item.glbAsset) {
+      const slot = item.glbAsset.equipSlot;
+      if (slot === 'outfit') {
+        this.state.equippedOutfitId = item.id;
+      } else if (slot === 'glider') {
+        this.state.equippedGliderId = item.id;
+      } else if (slot === 'gloo-wall') {
+        this.state.equippedGlooSkinId = item.id;
+      } else {
+        const armoryKey = getGlbArmoryCategoryKey(slot) ?? item.category;
+        this.state.equippedArmoryIds[armoryKey] = item.id;
+      }
+      return;
+    }
     if (item.avatarId) {
       this.state.equippedAvatarId = item.avatarId;
       return;
@@ -763,7 +922,7 @@ export class ShopManager implements IShopService, Subsystem {
         const ownedSet = new Set<string>(defaultOwned);
         if (Array.isArray(parsed.ownedIds)) {
           for (const id of parsed.ownedIds) {
-            if (typeof id === 'string' && this.catalogById.has(id)) {
+            if (typeof id === 'string' && (this.catalogById.has(id) || isGlbItemId(id))) {
               ownedSet.add(id);
             }
           }
@@ -774,6 +933,8 @@ export class ShopManager implements IShopService, Subsystem {
             if (typeof id === 'string') {
               const catItem = this.catalogById.get(id);
               if (catItem && catItem.category === cat && (catItem.defaultOwned || ownedSet.has(id))) {
+                equippedArmoryIds[cat as ShopCategory] = id;
+              } else if (!catItem && isGlbItemId(id) && ownedSet.has(id)) {
                 equippedArmoryIds[cat as ShopCategory] = id;
               }
             }

@@ -132,7 +132,12 @@ function createDefaultVaultState(): RankedVaultState {
 function sanitizeVaultState(
   raw: Partial<RankedVaultState> | undefined,
   existing?: RankedVaultState,
-  options?: { isDeveloper?: boolean; enforcePurchaseIntegrity?: boolean },
+  options?: {
+    isDeveloper?: boolean;
+    enforcePurchaseIntegrity?: boolean;
+    dynamicPriceMap?: ReadonlyMap<string, number>;
+    developerDynamicIds?: readonly string[];
+  },
 ): RankedVaultState {
   const isDev = Boolean(options?.isDeveloper);
   const enforceIntegrity = Boolean(options?.enforcePurchaseIntegrity && existing && !isDev);
@@ -142,10 +147,18 @@ function sanitizeVaultState(
     for (const devId of getAllDeveloperOwnedItemIds()) {
       ownedSet.add(devId);
     }
+    if (options?.developerDynamicIds) {
+      for (const dynId of options.developerDynamicIds) {
+        if (typeof dynId === 'string' && dynId.trim()) {
+          ownedSet.add(dynId.trim().slice(0, 64));
+        }
+      }
+    }
   }
 
   let validatedCredits = base.credits;
   const priceMap = getCatalogItemPriceMap();
+  const dynamicPrices = options?.dynamicPriceMap;
   const candidateCredits =
     raw && typeof raw.credits === 'number' && Number.isFinite(raw.credits) && raw.credits >= 0
       ? Math.floor(raw.credits)
@@ -167,13 +180,21 @@ function sanitizeVaultState(
       let addedCost = 0;
       let allKnownInCatalog = true;
       for (const newId of uniqueNewIds) {
-        const entry = priceMap.get(newId);
-        if (!entry || (!entry.defaultOwned && entry.priceCredits <= 0)) {
+        const staticEntry = priceMap.get(newId);
+        const dynamicPrice = dynamicPrices?.get(newId);
+        if (staticEntry) {
+          if (!staticEntry.defaultOwned && staticEntry.priceCredits <= 0) {
+            allKnownInCatalog = false;
+            break;
+          }
+          if (!staticEntry.defaultOwned) {
+            addedCost += staticEntry.priceCredits;
+          }
+        } else if (typeof dynamicPrice === 'number' && Number.isFinite(dynamicPrice) && dynamicPrice >= 0) {
+          addedCost += Math.floor(dynamicPrice);
+        } else {
           allKnownInCatalog = false;
           break;
-        }
-        if (!entry.defaultOwned) {
-          addedCost += entry.priceCredits;
         }
       }
 
@@ -490,6 +511,25 @@ export class RankedStore {
       this.ensureDefaultMailboxBroadcasts();
       this.initialized = true;
     }
+  }
+
+  private dynamicGlbPriceProvider: (() => ReadonlyMap<string, number>) | null = null;
+  private dynamicGlbAllIdsProvider: (() => readonly string[]) | null = null;
+
+  setGlbCatalogProviders(providers: {
+    getPublishedPrices: () => ReadonlyMap<string, number>;
+    getAllIds: () => readonly string[];
+  }): void {
+    this.dynamicGlbPriceProvider = providers.getPublishedPrices;
+    this.dynamicGlbAllIdsProvider = providers.getAllIds;
+  }
+
+  getStoreFilePath(): string {
+    return this.filePath;
+  }
+
+  getPostgresDatabase(): PostgresDatabase | null {
+    return this.pgDb;
   }
 
   getStorageMode(): 'postgres' | 'file' {
@@ -1002,10 +1042,18 @@ export class RankedStore {
       changed = true;
     }
     const allIds = getAllDeveloperOwnedItemIds();
+    const dynamicDevIds = this.dynamicGlbAllIdsProvider ? this.dynamicGlbAllIdsProvider() : [];
     const prevOwnedCount = rec.vault?.ownedIds?.length ?? 0;
     const prevCredits = rec.vault?.credits;
-    rec.vault = sanitizeVaultState(rec.vault, rec.vault, { isDeveloper: true });
-    if (rec.vault.credits !== prevCredits || rec.vault.ownedIds.length !== prevOwnedCount || rec.vault.ownedIds.length < allIds.length) {
+    rec.vault = sanitizeVaultState(rec.vault, rec.vault, {
+      isDeveloper: true,
+      developerDynamicIds: dynamicDevIds,
+    });
+    if (
+      rec.vault.credits !== prevCredits ||
+      rec.vault.ownedIds.length !== prevOwnedCount ||
+      rec.vault.ownedIds.length < allIds.length
+    ) {
       changed = true;
     }
     return changed;
@@ -1497,8 +1545,20 @@ export class RankedStore {
   }> {
     const now = Date.now();
     const uid = input.firebaseUid.trim();
-    const boundPlayerId = this.firebaseUidToPlayerId.get(uid);
-    const existingBound = boundPlayerId ? this.players.get(boundPlayerId) : undefined;
+    let boundPlayerId = this.firebaseUidToPlayerId.get(uid);
+    let existingBound = boundPlayerId ? this.players.get(boundPlayerId) : undefined;
+
+    if (!existingBound && uid === DEVELOPER_FIREBASE_UID) {
+      const devFallback = this.players.get(DEVELOPER_PLAYER_ID);
+      if (
+        devFallback &&
+        (!devFallback.firebaseUid || devFallback.firebaseUid === DEVELOPER_FIREBASE_UID) &&
+        devFallback.numericId === DEVELOPER_NUMERIC_ID
+      ) {
+        existingBound = devFallback;
+        boundPlayerId = devFallback.playerId;
+      }
+    }
 
     if (existingBound) {
       const candidate = this.clonePlayerRecord(existingBound);
@@ -1906,14 +1966,89 @@ export class RankedStore {
     }
     const candidate = this.clonePlayerRecord(rec);
     const isDev = this.isRecordVerifiedDeveloper(candidate);
+    const dynamicPriceMap = this.dynamicGlbPriceProvider ? this.dynamicGlbPriceProvider() : undefined;
+    const dynamicDevIds = isDev && this.dynamicGlbAllIdsProvider ? this.dynamicGlbAllIdsProvider() : undefined;
     candidate.vault = sanitizeVaultState(input.vault, candidate.vault, {
       isDeveloper: isDev,
       enforcePurchaseIntegrity: !isDev,
+      dynamicPriceMap,
+      developerDynamicIds: dynamicDevIds,
     });
     this.enforceDeveloperEntitlement(candidate);
     candidate.updatedAt = Date.now();
     await this.commitPlayerCandidateAsync(candidate);
     return this.toPublicProfile(candidate, false, isDev);
+  }
+
+  async purchaseStoreItemAsync(input: {
+    playerId: string;
+    secretToken?: string;
+    firebaseUid?: string;
+    itemId: string;
+    priceCredits: number;
+    isAvailable: boolean;
+  }): Promise<
+    | { ok: true; profile: RankedProfile; vault: RankedVaultState }
+    | { ok: false; status: number; code: string; error: string }
+  > {
+    let rec: StoredPlayerRecord | undefined;
+    if (input.firebaseUid) {
+      const pid = this.firebaseUidToPlayerId.get(input.firebaseUid);
+      if (pid) rec = this.players.get(pid);
+    }
+    if (!rec && input.playerId && input.secretToken) {
+      const found = this.players.get(input.playerId);
+      if (found && tokensMatch(found.secretToken, input.secretToken)) {
+        rec = found;
+      }
+    }
+    if (!rec) {
+      return { ok: false, status: 401, code: 'UNAUTHORIZED', error: 'Authentication required to purchase items.' };
+    }
+
+    const candidate = this.clonePlayerRecord(rec);
+    const isDev = this.isRecordVerifiedDeveloper(candidate);
+    this.enforceDeveloperEntitlement(candidate);
+
+    const vault = candidate.vault ?? (candidate.vault = createDefaultVaultState());
+
+    if (!input.isAvailable && !isDev) {
+      return { ok: false, status: 404, code: 'ITEM_UNAVAILABLE', error: 'This item is no longer available in the store.' };
+    }
+
+    if (vault.ownedIds.includes(input.itemId)) {
+      return { ok: false, status: 409, code: 'ALREADY_OWNED', error: 'You already own this item.' };
+    }
+
+    const safePrice = Math.max(0, Math.floor(input.priceCredits));
+    if (!isDev && vault.credits < safePrice) {
+      return { ok: false, status: 400, code: 'INSUFFICIENT_CREDITS', error: 'Insufficient NX credits for this purchase.' };
+    }
+
+    if (!isDev) {
+      vault.credits = Math.max(0, Math.floor(vault.credits - safePrice));
+    }
+    vault.ownedIds = Array.from(new Set([...vault.ownedIds, input.itemId]));
+    candidate.updatedAt = Date.now();
+    await this.commitPlayerCandidateAsync(candidate);
+    const publicProfile = this.toPublicProfile(candidate, false, isDev);
+    return {
+      ok: true,
+      profile: publicProfile,
+      vault: publicProfile.vault ?? createDefaultVaultState(),
+    };
+  }
+
+  getPlayerOwnedIdsByFirebaseUid(firebaseUid: string): string[] {
+    const pid = this.firebaseUidToPlayerId.get(firebaseUid);
+    const rec = pid ? this.players.get(pid) : undefined;
+    return rec?.vault ? [...rec.vault.ownedIds] : [];
+  }
+
+  getPlayerOwnedIdsByCredentials(playerId: string, secretToken: string): string[] | null {
+    const rec = this.players.get(playerId);
+    if (!rec || !tokensMatch(rec.secretToken, secretToken)) return null;
+    return rec.vault ? [...rec.vault.ownedIds] : [];
   }
 
   async reconcileVerifiedDeveloperSessionAsync(
@@ -1922,11 +2057,25 @@ export class RankedStore {
     const cleanedUid = typeof firebaseUid === 'string' ? firebaseUid.trim() : '';
     if (cleanedUid !== DEVELOPER_FIREBASE_UID) return null;
     const pid = this.firebaseUidToPlayerId.get(cleanedUid);
-    const rec = pid ? this.players.get(pid) : undefined;
-    if (!rec || !this.isRecordVerifiedDeveloper(rec)) return null;
+    let rec = pid ? this.players.get(pid) : undefined;
+    if (!rec) {
+      const fallback = this.players.get(DEVELOPER_PLAYER_ID);
+      if (
+        fallback &&
+        (!fallback.firebaseUid || fallback.firebaseUid === DEVELOPER_FIREBASE_UID) &&
+        fallback.numericId === DEVELOPER_NUMERIC_ID
+      ) {
+        rec = fallback;
+      }
+    }
+    if (!rec) return null;
     const candidate = this.clonePlayerRecord(rec);
+    if (!candidate.firebaseUid) {
+      candidate.firebaseUid = DEVELOPER_FIREBASE_UID;
+    }
+    if (!this.isRecordVerifiedDeveloper(candidate)) return null;
     const changed = this.enforceDeveloperEntitlement(candidate);
-    if (changed) {
+    if (changed || this.firebaseUidToPlayerId.get(DEVELOPER_FIREBASE_UID) !== DEVELOPER_PLAYER_ID) {
       candidate.updatedAt = Date.now();
       await this.commitPlayerCandidateAsync(candidate);
       if (!this.pgRepo) {

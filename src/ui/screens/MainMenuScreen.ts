@@ -62,6 +62,7 @@ import {
 
 export interface MainMenuCallbacks {
   onNavigate: (screen: ScreenId, options?: { openCustomize?: boolean }) => void;
+  onOpenGlbImport?: () => void;
   onOpenProfile: () => void;
   onSelectGameMode: (mode: LobbyGameMode) => void;
   onStartPressed: () => void;
@@ -215,6 +216,8 @@ export class MainMenuScreen {
   private isQueuing = false;
   private isStartingMatch = false;
   private isInventoryOpen = false;
+  private isDeveloperVerified = false;
+  private readonly glbImportNavBtn: HTMLButtonElement;
   private i18nUnsubscribe: (() => void) | null = null;
 
   constructor(
@@ -447,6 +450,15 @@ export class MainMenuScreen {
           >
             <span class="w-4 h-4 sm:w-5 sm:h-5 text-amber-300 shrink-0">${getShopCrateSvg()}</span>
             <span data-i18n="nav-shop" class="text-[10px] sm:text-xs font-extrabold tracking-wider uppercase truncate">${i18n.t('menu.nav.shop')}</span>
+          </button>
+
+          <button
+            type="button"
+            data-action="open-glb-import"
+            class="hidden nexus-btn-secondary px-2 sm:px-3 py-2 sm:py-2.5 rounded-md flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2.5 min-h-[42px] sm:min-h-[44px] min-w-0 border-amber-400/75 bg-amber-500/15 text-amber-200 hover:border-amber-300"
+          >
+            <span class="w-4 h-4 sm:w-5 sm:h-5 text-amber-300 shrink-0">${getCustomizeIconSvg()}</span>
+            <span data-i18n="nav-glb-import" class="text-[10px] sm:text-xs font-extrabold tracking-wider uppercase truncate">${i18n.t('shop.tab.glb-import')}</span>
           </button>
 
           <button
@@ -845,6 +857,7 @@ export class MainMenuScreen {
     this.incomingInviteMetaEl = this.element.querySelector('[data-role="incoming-invite-meta"]')!;
     this.incomingInviteBodyEl = this.element.querySelector('[data-role="incoming-invite-body"]')!;
     this.lobbyToastEl = this.element.querySelector('[data-role="lobby-toast"]')!;
+    this.glbImportNavBtn = this.element.querySelector('[data-action="open-glb-import"]')!;
 
     this.element.querySelectorAll<HTMLButtonElement>('[data-squad-size]').forEach((btn) => {
       const sz = Number(btn.dataset.squadSize) as SquadSize;
@@ -997,6 +1010,11 @@ export class MainMenuScreen {
       });
     });
 
+    this.glbImportNavBtn.addEventListener('click', () => {
+      if (!this.isDeveloperVerified) return;
+      this.callbacks.onOpenGlbImport?.();
+    });
+
     const openCustomize = () => {
       this.callbacks.onNavigate('characters', { openCustomize: true });
     };
@@ -1045,6 +1063,7 @@ export class MainMenuScreen {
     setText('[data-i18n="nav-customize"]', i18n.t('menu.customizeBtn'));
     setText('[data-i18n="nav-vault"]', i18n.t('menu.nav.vault'));
     setText('[data-i18n="nav-shop"]', i18n.t('menu.nav.shop'));
+    setText('[data-i18n="nav-glb-import"]', i18n.t('shop.tab.glb-import'));
     setText('[data-i18n="nav-settings"]', i18n.t('menu.nav.settings'));
     setText('[data-i18n="queue-title"]', i18n.t('menu.queue.title'));
     setText('[data-action="cancel-queue"]', i18n.t('common.cancel'));
@@ -1434,6 +1453,11 @@ export class MainMenuScreen {
         this.profileAvatarImg.classList.remove('opacity-0');
       },
     );
+  }
+
+  setDeveloperAccess(isVerifiedDeveloper: boolean): void {
+    this.isDeveloperVerified = Boolean(isVerifiedDeveloper);
+    this.glbImportNavBtn.classList.toggle('hidden', !this.isDeveloperVerified);
   }
 
   setSelectedMode(mode: LobbyGameMode): void {

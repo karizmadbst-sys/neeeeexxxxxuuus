@@ -8,6 +8,8 @@ import {
 import { EmotePreviewCanvas } from '../../emotes/EmotePreviewCanvas';
 import { i18n } from '../../i18n/I18nManager';
 import { DEFAULT_R6_CUSTOMIZATION, type R6Customization } from '../../player/R6CustomizationData';
+import { sanitizeAccentHex } from '../../shop/GlbAssetTypes';
+import { glbStoreClient } from '../../shop/GlbStoreClient';
 import {
   DEFAULT_AVATAR_ID,
   DEFAULT_BANNER_ID,
@@ -25,6 +27,7 @@ import {
   type ShopSnapshot,
   type ShopWeaponSubCategory,
 } from '../../shop/IShopSystem';
+import { GlbInteractivePreview } from '../components/GlbInteractivePreview';
 import {
   getAvatarSvg,
   getBannerSvg,
@@ -35,6 +38,7 @@ import {
 } from '../icons/AvatarBannerSvg';
 import { AvatarPreviewModal } from '../modals/AvatarPreviewModal';
 import { BannerPreviewModal } from '../modals/BannerPreviewModal';
+import { GlbImportPanel } from './GlbImportPanel';
 import {
   getArmorSvg,
   getBackpackSvg,
@@ -51,9 +55,18 @@ import {
   getWeaponSvg,
 } from '../icons/GameIcons';
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export interface ShopScreenCallbacks {
   onSelectOffer: (item: ShopCatalogItem) => void;
-  onPurchaseItem: (item: ShopCatalogItem) => ShopActionResult;
+  onPurchaseItem: (item: ShopCatalogItem) => ShopActionResult | Promise<ShopActionResult>;
   onEquipItem: (item: ShopCatalogItem) => ShopActionResult;
   onUnequipItem: (item: ShopCatalogItem) => ShopActionResult;
   onEquipEmoteSlot: (item: ShopCatalogItem, slotIndex: number) => ShopActionResult;
@@ -61,6 +74,7 @@ export interface ShopScreenCallbacks {
   onPreviewEmote?: (emoteId: string) => void;
   onStopPreviewEmote?: () => void;
   onPreviewGlooWall?: (skinId: string) => void;
+  onRefreshGlbCatalog?: () => Promise<void>;
   onOpenVault?: () => void;
   onBack: () => void;
 }
@@ -121,6 +135,9 @@ function isBaseDefaultItem(item: ShopCatalogItem): boolean {
 
 export class ShopScreen {
   readonly element: HTMLElement;
+  private catalog: readonly ShopCatalogItem[] = NEXUS_SHOP_CATALOG;
+  private isDeveloperVerified = false;
+  private purchaseInFlight = false;
   private activeTab: ShopBrowseTab = 'clothing';
   private activeClothingSub: 'all' | ShopClothingSubCategory = 'all';
   private activeWeaponSub: 'all' | ShopWeaponSubCategory = 'all';
@@ -135,11 +152,14 @@ export class ShopScreen {
   private readonly headerSubEl: HTMLElement;
   private readonly balanceLabelEl: HTMLElement;
   private readonly backBtnEl: HTMLButtonElement;
+  private readonly glbImportHeaderBtnEl: HTMLButtonElement | null;
   private readonly vaultBtnEl: HTMLButtonElement | null;
   private readonly creditsEl: HTMLElement;
   private readonly tabsEl: HTMLElement;
   private readonly subTabsEl: HTMLElement;
   private readonly countEl: HTMLElement;
+  private readonly storefrontSplitEl: HTMLElement;
+  private readonly glbImportHostEl: HTMLElement;
   private readonly gridEl: HTMLElement;
   private readonly inspectorEl: HTMLElement;
 
@@ -148,6 +168,9 @@ export class ShopScreen {
   private emotePreviewCanvas: EmotePreviewCanvas | null = null;
   private previewCanvasEmoteId: string | null = null;
   private previewCanvasContextKey = '';
+  private glbInspectorPreview: GlbInteractivePreview | null = null;
+  private glbPreviewModelKey = '';
+  private glbImportPanel: GlbImportPanel | null = null;
   private previewingEmoteId: string | null = null;
   private previewRemainingSec = 0;
   private unsubI18n: (() => void) | null = null;
@@ -193,6 +216,11 @@ export class ShopScreen {
           <div class="flex items-center gap-2 shrink-0">
             <button
               type="button"
+              data-action="open-glb-import"
+              class="hidden nexus-btn-secondary px-3 py-1.5 sm:py-2 rounded-md text-xs font-black tracking-wider uppercase border-amber-400/75 bg-amber-500/15 text-amber-200 hover:border-amber-300 min-h-[34px] sm:min-h-[40px] whitespace-nowrap shrink-0"
+            >${i18n.t('shop.tab.glb-import')}</button>
+            <button
+              type="button"
               data-action="open-vault"
               class="${this.callbacks.onOpenVault ? '' : 'hidden '}nexus-btn-secondary px-3 py-1.5 sm:py-2 rounded-md text-xs font-black tracking-wider uppercase border-sky-400/50 text-sky-200 min-h-[34px] sm:min-h-[40px] whitespace-nowrap shrink-0"
             >${i18n.t('vault.goToVault')}</button>
@@ -215,7 +243,7 @@ export class ShopScreen {
         </div>
 
         <!-- Main Responsive Storefront Split: Grid + Detail Inspector -->
-        <div class="flex-1 min-h-0 nexus-scroll overflow-y-auto min-[540px]:overflow-hidden flex flex-col min-[540px]:flex-row gap-2.5 sm:gap-4">
+        <div data-role="storefront-split" class="flex-1 min-h-0 nexus-scroll overflow-y-auto min-[540px]:overflow-hidden flex flex-col min-[540px]:flex-row gap-2.5 sm:gap-4">
           <!-- Product Grid -->
           <section class="flex-1 min-w-0 min-[540px]:min-h-0 min-[540px]:nexus-scroll min-[540px]:overflow-y-auto min-[540px]:pr-1 order-2 min-[540px]:order-1">
             <div data-role="grid" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5 sm:gap-3.5 pb-4"></div>
@@ -226,6 +254,9 @@ export class ShopScreen {
             <div data-role="inspector" class="nexus-panel rounded-lg p-3 sm:p-4 flex flex-col gap-2.5 sm:gap-3.5 min-[540px]:max-h-full min-[540px]:nexus-scroll min-[540px]:overflow-y-auto"></div>
           </aside>
         </div>
+
+        <!-- Developer-Only GLB Import & Management Workspace -->
+        <div data-role="glb-import-host" class="hidden flex-1 min-h-0 nexus-scroll overflow-y-auto lg:overflow-hidden"></div>
       </div>
     `;
 
@@ -233,11 +264,14 @@ export class ShopScreen {
     this.headerSubEl = this.element.querySelector('[data-role="shop-subtitle"]')!;
     this.balanceLabelEl = this.element.querySelector('[data-role="shop-balance-label"]')!;
     this.backBtnEl = this.element.querySelector('[data-action="back"]')!;
+    this.glbImportHeaderBtnEl = this.element.querySelector('[data-action="open-glb-import"]');
     this.vaultBtnEl = this.element.querySelector('[data-action="open-vault"]');
     this.creditsEl = this.element.querySelector('[data-role="credits"]')!;
     this.tabsEl = this.element.querySelector('[data-role="tabs"]')!;
     this.subTabsEl = this.element.querySelector('[data-role="sub-tabs"]')!;
     this.countEl = this.element.querySelector('[data-role="item-count"]')!;
+    this.storefrontSplitEl = this.element.querySelector('[data-role="storefront-split"]')!;
+    this.glbImportHostEl = this.element.querySelector('[data-role="glb-import-host"]')!;
     this.gridEl = this.element.querySelector('[data-role="grid"]')!;
     this.inspectorEl = this.element.querySelector('[data-role="inspector"]')!;
     this.element.appendChild(this.avatarPreviewModal.element);
@@ -247,6 +281,16 @@ export class ShopScreen {
       this.feedback = null;
       this.stopEmotePreview(true);
       this.callbacks.onBack();
+    });
+
+    this.glbImportHeaderBtnEl?.addEventListener('click', () => {
+      if (!this.isDeveloperVerified) return;
+      this.feedback = null;
+      this.stopEmotePreview(true);
+      this.activeTab = 'glb-import';
+      this.ensureSelectedInView();
+      this.renderTabs();
+      this.syncTabWorkspace();
     });
 
     this.vaultBtnEl?.addEventListener('click', () => {
@@ -277,18 +321,60 @@ export class ShopScreen {
     }
   }
 
+  setCatalog(items: readonly ShopCatalogItem[]): void {
+    this.catalog = items.length > 0 ? items : NEXUS_SHOP_CATALOG;
+    this.ensureSelectedInView();
+    if (this.hasOpened && this.element.style.display !== 'none' && this.activeTab !== 'glb-import') {
+      this.renderInspector();
+      this.renderGrid();
+    }
+  }
+
+  private syncDeveloperHeaderButton(): void {
+    if (!this.glbImportHeaderBtnEl) return;
+    this.glbImportHeaderBtnEl.classList.toggle('hidden', !this.isDeveloperVerified);
+    const active = this.isDeveloperVerified && this.activeTab === 'glb-import';
+    this.glbImportHeaderBtnEl.classList.toggle('border-amber-300', active);
+    this.glbImportHeaderBtnEl.classList.toggle('bg-amber-500/30', active);
+    this.glbImportHeaderBtnEl.classList.toggle('text-white', active);
+    this.glbImportHeaderBtnEl.classList.toggle('border-amber-400/75', !active);
+    this.glbImportHeaderBtnEl.classList.toggle('bg-amber-500/15', !active);
+    this.glbImportHeaderBtnEl.classList.toggle('text-amber-200', !active);
+  }
+
+  setDeveloperAccess(isVerifiedDeveloper: boolean): void {
+    const next = Boolean(isVerifiedDeveloper);
+    this.isDeveloperVerified = next;
+    if (!next) {
+      if (this.activeTab === 'glb-import') {
+        this.activeTab = 'clothing';
+      }
+      this.glbImportPanel?.dispose();
+      this.glbImportPanel = null;
+      this.glbImportHostEl.innerHTML = '';
+    }
+    this.syncDeveloperHeaderButton();
+    this.renderTabs();
+    if (this.hasOpened && this.element.style.display !== 'none') {
+      this.syncTabWorkspace();
+    }
+  }
+
   openScreen(initialTab?: ShopBrowseTab): void {
     this.hasOpened = true;
     if (initialTab && initialTab !== 'all') {
-      this.activeTab = initialTab;
-      if (initialTab !== 'clothing') this.activeClothingSub = 'all';
-      if (initialTab !== 'weapons') this.activeWeaponSub = 'all';
-      if (initialTab !== 'dances') this.activeEmoteSub = 'all';
+      if (initialTab === 'glb-import' && !this.isDeveloperVerified) {
+        this.activeTab = 'clothing';
+      } else {
+        this.activeTab = initialTab;
+      }
+      if (this.activeTab !== 'clothing') this.activeClothingSub = 'all';
+      if (this.activeTab !== 'weapons') this.activeWeaponSub = 'all';
+      if (this.activeTab !== 'dances') this.activeEmoteSub = 'all';
     }
     this.ensureSelectedInView();
     this.renderTabs();
-    this.renderInspector();
-    this.renderGrid();
+    this.syncTabWorkspace();
   }
 
   closeScreen(): void {
@@ -296,12 +382,37 @@ export class ShopScreen {
     this.bannerPreviewModal.close();
     this.stopEmotePreview(true);
     this.clearEmotePreview();
+    this.clearGlbInspectorPreview();
   }
 
   refreshIfOpened(): void {
     if (!this.hasOpened || this.element.style.display === 'none') {
       return;
     }
+    this.syncTabWorkspace();
+  }
+
+  private syncTabWorkspace(): void {
+    this.syncDeveloperHeaderButton();
+    if (this.activeTab === 'glb-import' && this.isDeveloperVerified) {
+      this.storefrontSplitEl.classList.add('hidden');
+      this.glbImportHostEl.classList.remove('hidden');
+      this.countEl.textContent = 'DEV STUDIO';
+      if (!this.glbImportPanel) {
+        this.glbImportPanel = new GlbImportPanel({
+          onCatalogChanged: async () => {
+            await this.callbacks.onRefreshGlbCatalog?.();
+          },
+        });
+        this.glbImportHostEl.innerHTML = '';
+        this.glbImportHostEl.appendChild(this.glbImportPanel.element);
+      }
+      void this.glbImportPanel.open();
+      return;
+    }
+
+    this.glbImportHostEl.classList.add('hidden');
+    this.storefrontSplitEl.classList.remove('hidden');
     this.renderInspector();
     this.renderGrid();
   }
@@ -311,6 +422,9 @@ export class ShopScreen {
     this.headerSubEl.textContent = i18n.t('shop.subtitle');
     this.balanceLabelEl.textContent = i18n.t('shop.balance');
     this.backBtnEl.textContent = `← ${i18n.t('common.back')}`;
+    if (this.glbImportHeaderBtnEl) {
+      this.glbImportHeaderBtnEl.textContent = i18n.t('shop.tab.glb-import');
+    }
     if (this.vaultBtnEl) {
       this.vaultBtnEl.textContent = i18n.t('vault.goToVault');
     }
@@ -347,10 +461,10 @@ export class ShopScreen {
   }
 
   private getFilteredItems(): readonly ShopCatalogItem[] {
-    if (this.activeTab === 'all') {
-      return NEXUS_SHOP_CATALOG;
+    if (this.activeTab === 'all' || this.activeTab === 'glb-import') {
+      return this.catalog;
     }
-    const base = NEXUS_SHOP_CATALOG.filter(
+    const base = this.catalog.filter(
       (item) => mapShopCategoryToBrowseTab(item.category) === this.activeTab,
     );
     if (this.activeTab === 'clothing' && this.activeClothingSub !== 'all') {
@@ -366,7 +480,8 @@ export class ShopScreen {
   }
 
   private renderTabs(): void {
-    const tabs: ReadonlyArray<{ id: ShopBrowseTab; label: string }> = [
+    const tabs: Array<{ id: ShopBrowseTab; label: string; devOnly?: boolean }> = [
+      { id: 'characters', label: i18n.t('shop.tab.characters') },
       { id: 'clothing', label: i18n.t('shop.tab.clothing') },
       { id: 'weapon-skins', label: i18n.t('shop.tab.weapon-skins') },
       { id: 'avatars', label: i18n.t('shop.tab.avatars') },
@@ -378,6 +493,10 @@ export class ShopScreen {
       { id: 'equipment', label: i18n.t('shop.tab.equipment') },
       { id: 'tools', label: i18n.t('shop.tab.tools') },
     ];
+    if (this.isDeveloperVerified) {
+      tabs.unshift({ id: 'glb-import', label: i18n.t('shop.tab.glb-import'), devOnly: true });
+    }
+    this.syncDeveloperHeaderButton();
 
     this.tabsEl.innerHTML = '';
     for (const tab of tabs) {
@@ -387,10 +506,13 @@ export class ShopScreen {
       btn.className = `${
         active
           ? 'nexus-btn-primary'
-          : 'nexus-btn-secondary text-slate-300'
+          : tab.devOnly
+            ? 'nexus-btn-secondary border-amber-400/55 text-amber-200'
+            : 'nexus-btn-secondary text-slate-300'
       } px-3.5 py-2 rounded-md text-xs font-bold tracking-wider uppercase min-h-[40px] whitespace-nowrap shrink-0`;
       btn.textContent = tab.label;
       btn.addEventListener('click', () => {
+        if (tab.id === 'glb-import' && !this.isDeveloperVerified) return;
         this.activeTab = tab.id;
         if (tab.id !== 'clothing') {
           this.activeClothingSub = 'all';
@@ -403,8 +525,7 @@ export class ShopScreen {
         }
         this.ensureSelectedInView();
         this.renderTabs();
-        this.renderInspector();
-        this.renderGrid();
+        this.syncTabWorkspace();
       });
       this.tabsEl.appendChild(btn);
     }
@@ -588,13 +709,20 @@ export class ShopScreen {
     };
   }
 
-  private handlePurchaseOrEquip(item: ShopCatalogItem): void {
+  private async handlePurchaseOrEquip(item: ShopCatalogItem): Promise<void> {
     this.selectedOfferId = item.id;
     const owned = this.isOwned(item);
     const equipped = this.isEquipped(item);
     let result: ShopActionResult;
     if (!owned) {
-      result = this.callbacks.onPurchaseItem(item);
+      if (this.purchaseInFlight) return;
+      this.purchaseInFlight = true;
+      this.renderInspector();
+      try {
+        result = await this.callbacks.onPurchaseItem(item);
+      } finally {
+        this.purchaseInFlight = false;
+      }
     } else if (equipped) {
       if (isBaseDefaultItem(item)) return;
       result = this.callbacks.onUnequipItem(item);
@@ -637,7 +765,7 @@ export class ShopScreen {
       this.callbacks.onSelectOffer(item);
     }
     this.avatarPreviewModal.open(this.buildAvatarModalState(item), (targetItem) => {
-      this.handlePurchaseOrEquip(targetItem);
+      void this.handlePurchaseOrEquip(targetItem);
     });
   }
 
@@ -663,7 +791,7 @@ export class ShopScreen {
       this.callbacks.onSelectOffer(item);
     }
     this.bannerPreviewModal.open(this.buildBannerModalState(item), (targetItem) => {
-      this.handlePurchaseOrEquip(targetItem);
+      void this.handlePurchaseOrEquip(targetItem);
     });
   }
 
@@ -749,7 +877,7 @@ export class ShopScreen {
 
   private syncPreviewUiState(): void {
     const selectedItem =
-      NEXUS_SHOP_CATALOG.find((i) => i.id === this.selectedOfferId) ?? NEXUS_SHOP_CATALOG[0];
+      this.catalog.find((i) => i.id === this.selectedOfferId) ?? this.catalog[0];
     const isSelectedPreviewing = Boolean(
       selectedItem.emoteId && this.previewingEmoteId === selectedItem.emoteId,
     );
@@ -809,12 +937,21 @@ export class ShopScreen {
     this.previewCanvasContextKey = '';
   }
 
+  private clearGlbInspectorPreview(): void {
+    if (this.glbInspectorPreview) {
+      this.glbInspectorPreview.dispose();
+      this.glbInspectorPreview = null;
+    }
+    this.glbPreviewModelKey = '';
+  }
+
   private renderInspector(): void {
     this.inspectorSnapshotCancel?.();
     this.inspectorSnapshotCancel = null;
 
     const item =
-      NEXUS_SHOP_CATALOG.find((i) => i.id === this.selectedOfferId) ?? NEXUS_SHOP_CATALOG[0];
+      this.catalog.find((i) => i.id === this.selectedOfferId) ?? this.catalog[0];
+    if (!item) return;
 
     // If user moved to a different item than the active preview, stop active dance music/preview
     if (this.previewingEmoteId && item.emoteId !== this.previewingEmoteId) {
@@ -822,19 +959,25 @@ export class ShopScreen {
     }
 
     const loc = i18n.translateShopItem(item.id, item.name, item.description, item.lootId);
+    const safeName = escapeHtml(loc.name);
+    const safeDesc = escapeHtml(loc.desc);
+    const safeAccentHex = sanitizeAccentHex(item.accentHex, '#38bdf8');
     const state = this.getActionButtonState(item);
     const categoryLabel = i18n.translateShopCategory(item.category);
     const subLabel = item.subCategory ? i18n.translateShopSubCategory(item.subCategory) : '';
-    const metaLine =
+    const metaLine = escapeHtml(
       subLabel && subLabel !== categoryLabel
         ? `${i18n.translateRarity(item.rarity)} · ${categoryLabel} · ${subLabel}`
-        : `${i18n.translateRarity(item.rarity)} · ${categoryLabel}`;
+        : `${i18n.translateRarity(item.rarity)} · ${categoryLabel}`,
+    );
 
     const priceDisplay =
       item.priceCredits === 0
         ? i18n.t('shop.free')
         : i18n.t('common.creditsShort', { amount: item.priceCredits.toLocaleString() });
 
+    const ctaDisabled = state.disabled || (!state.owned && this.purchaseInFlight);
+    const ctaLabel = !state.owned && this.purchaseInFlight ? '...' : state.label;
     const ctaClass = state.equipped
       ? state.baseDefault
         ? 'w-full py-2.5 px-4 rounded-md text-xs font-black tracking-wider uppercase min-h-[44px] bg-emerald-500/20 border border-emerald-400/70 text-emerald-200 cursor-default'
@@ -860,8 +1003,8 @@ export class ShopScreen {
                     : spec.value;
                 return `
               <div class="bg-slate-900/90 border border-slate-800 rounded-md px-2.5 py-2 flex flex-col gap-0.5">
-                <span class="text-[11px] text-slate-400 truncate">${i18n.t(spec.labelKey as Parameters<typeof i18n.t>[0])}</span>
-                <span class="text-xs font-bold text-white tabular-nums truncate">${displayValue}</span>
+                <span class="text-[11px] text-slate-400 truncate">${escapeHtml(i18n.t(spec.labelKey as Parameters<typeof i18n.t>[0]))}</span>
+                <span class="text-xs font-bold text-white tabular-nums truncate">${escapeHtml(displayValue)}</span>
               </div>`;
               })
               .join('')}
@@ -873,11 +1016,12 @@ export class ShopScreen {
           this.feedback.ok
             ? 'bg-emerald-500/15 border-emerald-400/50 text-emerald-200'
             : 'bg-rose-500/15 border-rose-400/50 text-rose-200'
-        }">${this.feedback.text}</div>`
+        }">${escapeHtml(this.feedback.text)}</div>`
       : '';
 
     const isSvgCosmetic = Boolean(item.avatarId || item.bannerId);
     const isEmoteItem = Boolean(item.emoteId);
+    const isGlbItem = Boolean(item.glbAsset);
     const isPreviewingThis = Boolean(item.emoteId && this.previewingEmoteId === item.emoteId);
     const wheelSlotsHtml = isEmoteItem ? this.buildWheelAssignerHtml(item, state.owned) : '';
 
@@ -893,7 +1037,21 @@ export class ShopScreen {
       this.clearEmotePreview();
     }
 
-    const viewportInnerHtml = isEmoteItem
+    const nextGlbKey = item.glbAsset
+      ? `${item.glbAsset.assetId}|${item.glbAsset.modelUrl}|${item.glbAsset.equipSlot}|${item.glbAsset.scaleMultiplier}`
+      : '';
+    const canReuseGlb = Boolean(
+      isGlbItem && this.glbInspectorPreview && this.glbPreviewModelKey === nextGlbKey,
+    );
+    if (canReuseGlb && this.glbInspectorPreview?.element.parentElement) {
+      this.glbInspectorPreview.element.remove();
+    } else if (!isGlbItem || !canReuseGlb) {
+      this.clearGlbInspectorPreview();
+    }
+
+    const viewportInnerHtml = isGlbItem
+      ? `<div data-role="glb-inspector-mount" class="absolute inset-0 w-full h-full"></div>`
+      : isEmoteItem
       ? `<div data-role="live-emote-mount" class="absolute inset-0 w-full h-full"></div>
          <div class="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2 pointer-events-none">
            <span data-role="preview-status-badge" class="${
@@ -916,20 +1074,20 @@ export class ShopScreen {
           ? `<div data-action="preview-avatar" class="w-full h-full cursor-pointer group relative overflow-hidden">
                ${getAvatarPreviewHtml(item.avatarId, 'w-full h-full transition-transform duration-300 group-hover:scale-[1.03]', 'cover')}
              </div>`
-          : `<div data-action="preview-avatar" class="w-32 h-32 sm:w-40 sm:h-40 rounded-lg overflow-hidden border-2 shadow-xl cursor-pointer" style="border-color:${item.accentHex}">${getAvatarSvg(item.avatarId, 'w-full h-full')}</div>`
+          : `<div data-action="preview-avatar" class="w-32 h-32 sm:w-40 sm:h-40 rounded-lg overflow-hidden border-2 shadow-xl cursor-pointer" style="border-color:${safeAccentHex}">${getAvatarSvg(item.avatarId, 'w-full h-full')}</div>`
         : item.bannerId
           ? hasBannerImage(item.bannerId)
             ? `<div data-action="preview-banner" class="w-full h-full cursor-pointer group relative overflow-hidden">
                  ${getBannerPreviewHtml(item.bannerId, 'w-full h-full transition-transform duration-300 group-hover:scale-[1.03]', 'cover')}
                </div>`
-            : `<div data-action="preview-banner" class="w-full h-full p-3 flex items-center justify-center cursor-pointer"><div class="w-full aspect-[16/6] rounded-md overflow-hidden border shadow-xl" style="border-color:${item.accentHex}">${getBannerSvg(item.bannerId, 'w-full h-full')}</div></div>`
+            : `<div data-action="preview-banner" class="w-full h-full p-3 flex items-center justify-center cursor-pointer"><div class="w-full aspect-[16/6] rounded-md overflow-hidden border shadow-xl" style="border-color:${safeAccentHex}">${getBannerSvg(item.bannerId, 'w-full h-full')}</div></div>`
           : `<div data-role="inspector-fallback" class="w-16 h-16 opacity-35 pointer-events-none flex items-center justify-center">
                ${this.getFallbackIconSvg(item)}
              </div>
              <img
                data-role="inspector-img"
                src=""
-               alt="${loc.name}"
+               alt="${safeName}"
                referrerpolicy="no-referrer"
                class="absolute inset-0 w-full h-full object-contain p-3 opacity-0 transition-opacity duration-200"
              />`;
@@ -938,7 +1096,7 @@ export class ShopScreen {
       <div
         data-role="inspector-viewport"
         class="relative w-full aspect-[4/3] rounded-md overflow-hidden border border-slate-800 bg-slate-950 flex items-center justify-center shrink-0"
-        style="background: radial-gradient(circle at 50% 45%, ${item.accentHex}24 0%, rgba(15, 23, 42, 0.96) 68%, #020617 100%);"
+        style="background: radial-gradient(circle at 50% 45%, ${safeAccentHex}24 0%, rgba(15, 23, 42, 0.96) 68%, #020617 100%);"
       >
         ${viewportInnerHtml}
       </div>
@@ -946,9 +1104,9 @@ export class ShopScreen {
       <div class="flex flex-col gap-1.5 min-w-0">
         <div class="text-xs font-semibold text-sky-300 truncate">${metaLine}</div>
         <div class="flex items-start justify-between gap-2">
-          <h2 class="text-lg font-black tracking-wide text-white leading-tight">${loc.name}</h2>
+          <h2 class="text-lg font-black tracking-wide text-white leading-tight">${safeName}</h2>
         </div>
-        <p class="text-xs text-slate-300 leading-relaxed">${loc.desc}</p>
+        <p class="text-xs text-slate-300 leading-relaxed">${safeDesc}</p>
       </div>
 
       ${specsHtml}
@@ -980,9 +1138,9 @@ export class ShopScreen {
                <button
                  type="button"
                  data-role="shop-action-btn"
-                 ${state.disabled ? 'disabled' : ''}
+                 ${ctaDisabled ? 'disabled' : ''}
                  class="${ctaClass}"
-               >${state.label}</button>
+               >${escapeHtml(ctaLabel)}</button>
              </div>`
           : item.glooSkinId
             ? `<div class="grid grid-cols-2 gap-2">
@@ -994,9 +1152,9 @@ export class ShopScreen {
                  <button
                    type="button"
                    data-role="shop-action-btn"
-                   ${state.disabled ? 'disabled' : ''}
+                   ${ctaDisabled ? 'disabled' : ''}
                    class="${ctaClass}"
-                 >${state.label}</button>
+                 >${escapeHtml(ctaLabel)}</button>
                </div>`
             : item.avatarId
               ? `<div class="grid grid-cols-2 gap-2">
@@ -1008,9 +1166,9 @@ export class ShopScreen {
                    <button
                      type="button"
                      data-role="shop-action-btn"
-                     ${state.disabled ? 'disabled' : ''}
+                     ${ctaDisabled ? 'disabled' : ''}
                      class="${ctaClass}"
-                   >${state.label}</button>
+                   >${escapeHtml(ctaLabel)}</button>
                  </div>`
               : item.bannerId
                 ? `<div class="grid grid-cols-2 gap-2">
@@ -1022,20 +1180,38 @@ export class ShopScreen {
                      <button
                        type="button"
                        data-role="shop-action-btn"
-                       ${state.disabled ? 'disabled' : ''}
+                       ${ctaDisabled ? 'disabled' : ''}
                        class="${ctaClass}"
-                     >${state.label}</button>
+                     >${escapeHtml(ctaLabel)}</button>
                    </div>`
                 : `<button
                      type="button"
                      data-role="shop-action-btn"
-                     ${state.disabled ? 'disabled' : ''}
+                     ${ctaDisabled ? 'disabled' : ''}
                      class="${ctaClass}"
-                   >${state.label}</button>`
+                   >${escapeHtml(ctaLabel)}</button>`
       }
     `;
 
-    if (isEmoteItem && item.emoteId) {
+    if (isGlbItem && item.glbAsset) {
+      const mount = this.inspectorEl.querySelector<HTMLElement>('[data-role="glb-inspector-mount"]');
+      if (mount) {
+        if (canReuseGlb && this.glbInspectorPreview) {
+          mount.appendChild(this.glbInspectorPreview.element);
+        } else {
+          const preview = new GlbInteractivePreview({ heightClass: 'h-full' });
+          preview.element.classList.remove('border', 'border-slate-800');
+          mount.appendChild(preview.element);
+          this.glbInspectorPreview = preview;
+          this.glbPreviewModelKey = nextGlbKey;
+          void preview.loadFromUrl(
+            item.glbAsset.modelUrl,
+            item.glbAsset.equipSlot,
+            item.glbAsset.scaleMultiplier,
+          );
+        }
+      }
+    } else if (isEmoteItem && item.emoteId) {
       const mount = this.inspectorEl.querySelector<HTMLElement>('[data-role="live-emote-mount"]');
       if (mount) {
         if (canReuseCanvas && this.emotePreviewCanvas) {
@@ -1104,7 +1280,7 @@ export class ShopScreen {
             this.callbacks.onPreviewGlooWall?.(glooSkinId);
             const viewport = this.inspectorEl.querySelector<HTMLElement>('[data-role="inspector-viewport"]');
             if (viewport && imgEl) {
-              viewport.style.boxShadow = `inset 0 0 42px ${item.accentHex}88, 0 0 24px ${item.accentHex}55`;
+              viewport.style.boxShadow = `inset 0 0 42px ${safeAccentHex}88, 0 0 24px ${safeAccentHex}55`;
               imgEl.style.transition = 'transform 260ms cubic-bezier(0.22, 1, 0.36, 1)';
               imgEl.style.transform = 'scale(0.86, 0.25) translateY(24%)';
               requestAnimationFrame(() => {
@@ -1140,7 +1316,7 @@ export class ShopScreen {
     }
 
     this.inspectorEl.querySelector('[data-role="shop-action-btn"]')?.addEventListener('click', () => {
-      this.handlePurchaseOrEquip(item);
+      void this.handlePurchaseOrEquip(item);
     });
   }
 
@@ -1223,11 +1399,15 @@ export class ShopScreen {
 
     for (const item of items) {
       const loc = i18n.translateShopItem(item.id, item.name, item.description, item.lootId);
+      const safeName = escapeHtml(loc.name);
+      const safeAccentHex = sanitizeAccentHex(item.accentHex, '#38bdf8');
       const isSelected = item.id === this.selectedOfferId;
       const state = this.getActionButtonState(item);
-      const subLabel = item.subCategory
-        ? i18n.translateShopSubCategory(item.subCategory)
-        : i18n.translateShopCategory(item.category);
+      const subLabel = escapeHtml(
+        item.subCategory
+          ? i18n.translateShopSubCategory(item.subCategory)
+          : i18n.translateShopCategory(item.category),
+      );
 
       const priceText =
         item.priceCredits === 0
@@ -1250,6 +1430,9 @@ export class ShopScreen {
         : state.owned
           ? `<span class="absolute top-2 right-2 px-2 py-0.5 rounded bg-sky-500/20 border border-sky-400/60 text-[10px] font-bold text-sky-200">${i18n.t('common.inVault')}</span>`
           : '';
+      const glbBadgeHtml = item.glbAsset
+        ? `<span class="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-slate-950/85 border border-sky-400/50 text-[9px] font-black tracking-wider text-sky-200">3D GLB</span>`
+        : '';
 
       const buyBtnClass = state.equipped
         ? state.baseDefault
@@ -1263,7 +1446,7 @@ export class ShopScreen {
       const previewBtnHtml = item.emoteId
         ? `<button
              type="button"
-             data-card-preview="${item.emoteId}"
+             data-card-preview="${escapeHtml(item.emoteId)}"
              class="${
                isDancePreviewing
                  ? 'px-2.5 py-2 rounded-md text-xs font-bold uppercase whitespace-nowrap shrink-0 min-h-[38px] bg-orange-500/25 border border-orange-400 text-orange-100'
@@ -1273,13 +1456,13 @@ export class ShopScreen {
         : item.avatarId
           ? `<button
                type="button"
-               data-card-avatar-preview="${item.id}"
+               data-card-avatar-preview="${escapeHtml(item.id)}"
                class="nexus-btn-secondary px-2.5 py-2 rounded-md text-xs font-bold uppercase whitespace-nowrap shrink-0 min-h-[38px] border-sky-400/50 text-sky-200"
              >${i18n.t('shop.preview')}</button>`
           : item.bannerId
             ? `<button
                  type="button"
-                 data-card-banner-preview="${item.id}"
+                 data-card-banner-preview="${escapeHtml(item.id)}"
                  class="nexus-btn-secondary px-2.5 py-2 rounded-md text-xs font-bold uppercase whitespace-nowrap shrink-0 min-h-[38px] border-sky-400/50 text-sky-200"
                >${i18n.t('shop.preview')}</button>`
             : '';
@@ -1288,18 +1471,18 @@ export class ShopScreen {
       const cardViewportBody = item.avatarId
         ? hasAvatarImage(item.avatarId)
           ? getAvatarPreviewHtml(item.avatarId, 'w-full h-full transition-transform duration-300', 'cover')
-          : `<div class="w-20 h-20 rounded-md overflow-hidden border shadow-md" style="border-color:${item.accentHex}">${getAvatarSvg(item.avatarId, 'w-full h-full')}</div>`
+          : `<div class="w-20 h-20 rounded-md overflow-hidden border shadow-md" style="border-color:${safeAccentHex}">${getAvatarSvg(item.avatarId, 'w-full h-full')}</div>`
         : item.bannerId
           ? hasBannerImage(item.bannerId)
             ? getBannerPreviewHtml(item.bannerId, 'w-full h-full transition-transform duration-300', 'cover')
-            : `<div class="w-full h-full p-2.5 flex items-center justify-center"><div class="w-full aspect-[16/6] rounded overflow-hidden border shadow-md" style="border-color:${item.accentHex}">${getBannerSvg(item.bannerId, 'w-full h-full')}</div></div>`
+            : `<div class="w-full h-full p-2.5 flex items-center justify-center"><div class="w-full aspect-[16/6] rounded overflow-hidden border shadow-md" style="border-color:${safeAccentHex}">${getBannerSvg(item.bannerId, 'w-full h-full')}</div></div>`
           : `<div data-card-fallback class="w-12 h-12 opacity-35 pointer-events-none flex items-center justify-center">
                ${this.getFallbackIconSvg(item)}
              </div>
              <img
                data-card-img
                src=""
-               alt="${loc.name}"
+               alt="${safeName}"
                referrerpolicy="no-referrer"
                class="absolute inset-0 w-full h-full object-contain p-2.5 opacity-0 transition-opacity duration-200"
              />`;
@@ -1307,22 +1490,23 @@ export class ShopScreen {
       card.innerHTML = `
         <div
           class="relative w-full aspect-[4/3] overflow-hidden border-b border-slate-800/90 flex items-center justify-center"
-          style="background: radial-gradient(circle at 50% 48%, ${item.accentHex}20 0%, rgba(15, 23, 42, 0.94) 70%, #020617 100%);"
+          style="background: radial-gradient(circle at 50% 48%, ${safeAccentHex}20 0%, rgba(15, 23, 42, 0.94) 70%, #020617 100%);"
         >
           ${cardViewportBody}
+          ${glbBadgeHtml}
           ${cornerStateHtml}
         </div>
 
         <div class="p-3.5 flex flex-col justify-between gap-3 flex-1">
           <div class="flex flex-col gap-1 min-w-0">
             <div class="text-xs font-medium text-slate-400 truncate">
-              ${i18n.translateRarity(item.rarity)} · ${subLabel}
+              ${escapeHtml(i18n.translateRarity(item.rarity))} · ${subLabel}
             </div>
-            <h3 class="text-sm font-extrabold tracking-wide text-white truncate">${loc.name}</h3>
+            <h3 class="text-sm font-extrabold tracking-wide text-white truncate">${safeName}</h3>
           </div>
 
           <div class="pt-2.5 border-t border-slate-800/90 flex items-center justify-between gap-2">
-            <span class="text-sm font-black text-amber-300 tabular-nums whitespace-nowrap">${priceText}</span>
+            <span class="text-sm font-black text-amber-300 tabular-nums whitespace-nowrap">${escapeHtml(priceText)}</span>
             <div class="flex items-center gap-1.5 shrink-0">
               ${previewBtnHtml}
               <button
@@ -1330,7 +1514,7 @@ export class ShopScreen {
                 data-card-buy
                 ${state.disabled ? 'disabled' : ''}
                 class="${buyBtnClass}"
-              >${state.cardLabel}</button>
+              >${escapeHtml(state.cardLabel)}</button>
             </div>
           </div>
         </div>
@@ -1339,7 +1523,23 @@ export class ShopScreen {
       if (!isCardSvgCosmetic) {
         const imgEl = card.querySelector<HTMLImageElement>('[data-card-img]');
         const fallbackEl = card.querySelector<HTMLElement>('[data-card-fallback]');
-        if (imgEl) {
+        if (imgEl && item.glbAsset) {
+          if (item.imageUrl) {
+            let cancelled = false;
+            this.gridSnapshotCancels.push(() => {
+              cancelled = true;
+            });
+            void glbStoreClient.resolvePreviewObjectUrl(item.imageUrl).then((objUrl) => {
+              if (cancelled || !objUrl) return;
+              imgEl.src = objUrl;
+              imgEl.classList.remove('opacity-0');
+              if (fallbackEl) {
+                fallbackEl.classList.remove('opacity-35');
+                fallbackEl.classList.add('opacity-0', 'hidden');
+              }
+            });
+          }
+        } else if (imgEl) {
           const cancel = this.previewRenderer.requestShopItemSnapshot(
             item,
             this.activeCharacter,
@@ -1391,7 +1591,7 @@ export class ShopScreen {
 
       card.querySelector<HTMLButtonElement>('[data-card-buy]')?.addEventListener('click', (e) => {
         e.stopPropagation();
-        this.handlePurchaseOrEquip(item);
+        void this.handlePurchaseOrEquip(item);
       });
 
       this.gridEl.appendChild(card);
@@ -1419,6 +1619,9 @@ export class ShopScreen {
     this.inspectorSnapshotCancel?.();
     this.inspectorSnapshotCancel = null;
     this.clearEmotePreview();
+    this.clearGlbInspectorPreview();
+    this.glbImportPanel?.dispose();
+    this.glbImportPanel = null;
     this.unsubI18n?.();
     this.unsubI18n = null;
   }
